@@ -142,7 +142,12 @@ function serverFixture(
 	const inputs = new Map<string, InboxItem[]>();
 	const active: Record<string, { type: "running" }> = {};
 	const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
-	const state = { promptFailures: 0, denied: false, streamDenied: false };
+	const state = {
+		promptFailures: 0,
+		denied: false,
+		streamDenied: false,
+		historyFailure: undefined as Promise<void> | undefined,
+	};
 	let sequence = 0;
 	const encode = (event: SessionEvent) =>
 		new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
@@ -189,11 +194,19 @@ function serverFixture(
 			}
 			const selectedId =
 				path.match(/\/session\/(ses_[^/]+)/)?.[1] ?? sharedSession.id;
-			if (path.endsWith("/message"))
+			if (path.endsWith("/message")) {
+				if (state.historyFailure) {
+					await state.historyFailure;
+					return Response.json(
+						{ message: "History is unavailable" },
+						{ status: 503 },
+					);
+				}
 				return Response.json({
 					data: histories.get(selectedId) ?? [],
 					cursor: {},
 				});
+			}
 			if (path.endsWith("/inbox"))
 				return Response.json({ data: inputs.get(selectedId) ?? [] });
 			if (path.endsWith("/permission") || path.endsWith("/form"))
@@ -778,6 +791,67 @@ describe("Pi hosted frontend", () => {
 				request.url.pathname.endsWith("/interrupt"),
 			),
 		).toBe(false);
+	});
+
+	test("reports one failed startup read and accepts prompts after reconnecting", async () => {
+		const fixture = serverFixture();
+		let failHistory = () => {};
+		fixture.state.historyFailure = new Promise<void>((resolve) => {
+			failHistory = resolve;
+		});
+		const runner = await load();
+		fixture.configure(runner, sharedSession.id);
+		const notices: string[] = [];
+		let live = false;
+		runner.setUIContext({
+			...runner.getUIContext(),
+			notify: (message) => notices.push(message),
+			setStatus: (_key, value) => {
+				live ||= value?.endsWith(" · live") ?? false;
+			},
+		});
+		const startup = runner.emit({ type: "session_start", reason: "startup" });
+		await eventually(() => live);
+		failHistory();
+		await startup;
+		expect(notices).toHaveLength(1);
+		expect(notices[0]).toContain("503");
+
+		fixture.state.historyFailure = undefined;
+		fixture.histories.set(sharedSession.id, [
+			user("msg_recovered", "Recovered"),
+		]);
+		fixture.publish({
+			id: "evt_reconnected",
+			type: "server.connected",
+			location: { directory: "/demo" },
+			data: {},
+		});
+		await eventually(() => transcript(runner).includes("Recovered"));
+		await eventually(() =>
+			fixture.requests.some((request) =>
+				request.url.pathname.endsWith("/view"),
+			),
+		);
+		expect(
+			await runner.emitInput(
+				"Continue after recovery",
+				undefined,
+				"interactive",
+			),
+		).toEqual({ action: "handled" });
+		const prompts = fixture.requests.filter((request) =>
+			request.url.pathname.endsWith("/prompt"),
+		);
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]?.body).toMatchObject({ text: "Continue after recovery" });
+		expect(fixture.inputs.get(sharedSession.id)).toHaveLength(1);
+		expect(
+			fixture.requests.filter((request) =>
+				request.url.pathname.endsWith("/view"),
+			),
+		).toHaveLength(1);
+		expect(notices).toHaveLength(1);
 	});
 
 	test("delayed first SSE connection repairs the initial snapshot and resumed markers do not duplicate rows", async () => {

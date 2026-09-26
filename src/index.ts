@@ -243,8 +243,18 @@ export default function leverage(pi: ExtensionAPI): void {
 		pi.setSessionName(session.title || "Leverage session");
 		streamState = "connecting";
 		status(ctx);
+		const completeAttach = () => {
+			if (opening !== generation || streamFailed || ready) return;
+			ready = true;
+			failure = "Choose a Leverage session with /leverage.";
+			void client.markRead(session.id, signal).catch(() => {});
+			status(ctx);
+		};
+		const initialSync = sync(ctx);
 		const repair = () => {
-			void sync(ctx).catch((error: unknown) => {
+			const pending = sync(ctx);
+			if (pending === initialSync) return;
+			void pending.then(completeAttach).catch((error: unknown) => {
 				if (opening === generation) report(ctx, error);
 			});
 		};
@@ -312,13 +322,8 @@ export default function leverage(pi: ExtensionAPI): void {
 				status(ctx);
 				report(ctx, error);
 			});
-		await sync(ctx);
-		if (opening !== generation) return;
-		if (streamFailed) return;
-		ready = true;
-		failure = "Choose a Leverage session with /leverage.";
-		void client.markRead(session.id, signal).catch(() => {});
-		status(ctx);
+		await initialSync;
+		completeAttach();
 	};
 	const switchTo = async (
 		session: SessionInfo,

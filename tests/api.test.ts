@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import assert from "node:assert/strict";
 import {
+	ApiError,
 	type InboxItem,
 	type ModelInfo,
 	type PermissionRequest,
@@ -267,6 +268,68 @@ describe("Leverage sessions", () => {
 		await assert.rejects(client.list(), /invalid page/);
 		await assert.rejects(client.get("../other"), /Invalid Leverage session/);
 		await assert.rejects(client.history("task", { limit: 201 }), /page size/);
+	});
+
+	test("reports the failing endpoint and server reason without response payloads or search text", async () => {
+		const { client, connection } = fixture(() =>
+			Response.json(
+				{
+					_tag: "UnknownError",
+					message:
+						"\u001b[31mthis folder could not be read just now\u001b[0m\n",
+					data: { token: "private-response-data" },
+				},
+				{
+					status: 503,
+					headers: { "x-leverage-correlation-id": "test-request-123" },
+				},
+			),
+		);
+		await assert.rejects(
+			client.list({ search: "private-search-text" }),
+			(error) => {
+				expect(error).toBeInstanceOf(ApiError);
+				const failure = error as ApiError;
+				expect(failure.status).toBe(503);
+				expect(failure.message).toContain(
+					"this folder could not be read just now",
+				);
+				expect(failure.message).toContain(
+					`GET ${connection.host}/api/opencode/api/session`,
+				);
+				expect(failure.message).toContain("Request ID: test-request-123");
+				expect(failure.message).not.toMatch(
+					/private-|test-token|\u001b|\?limit/,
+				);
+				return true;
+			},
+		);
+	});
+
+	test("keeps HTTP failures usable with HTML, malformed JSON, or oversized error bodies", async () => {
+		for (const [body, contentType] of [
+			["<html>private-gateway-page</html>", "text/html"],
+			['{"message":"private-invalid-json', "application/json"],
+			[
+				JSON.stringify({ message: "private-".repeat(4000) }),
+				"application/json",
+			],
+		]) {
+			const { client } = fixture(
+				() =>
+					new Response(body, {
+						status: 503,
+						headers: { "content-type": contentType },
+					}),
+			);
+			await assert.rejects(client.list(), (error) => {
+				expect(error).toBeInstanceOf(ApiError);
+				expect((error as Error).message).toContain("request failed (503)");
+				expect((error as Error).message).toContain("/api/opencode/api/session");
+				expect((error as Error).message).not.toContain("private-");
+				return true;
+			});
+		}
 	});
 	test("validates nested history fields before the UI reads them", async () => {
 		const { client } = fixture(() =>

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import {
 	OpenCodeEvent,
 	type OpenCodeEventEncoded,
@@ -58,11 +59,66 @@ export class ApiError extends Error {
 	constructor(
 		readonly status: number,
 		action = "request",
+		details?: { request: string; message?: string; correlationId?: string },
 	) {
-		super(`Leverage ${action} failed (${status})`);
+		super(
+			`Leverage ${action} failed (${status})${details?.message ? `: ${details.message}` : ""}` +
+				(details
+					? `\n${details.request}${details.correlationId ? `\nRequest ID: ${details.correlationId}` : ""}`
+					: ""),
+		);
 	}
 }
 class ProtocolError extends Error {}
+
+async function requestError(
+	response: Response,
+	method: string,
+	url: URL,
+	action = "request",
+): Promise<ApiError> {
+	let message: string | undefined;
+	const reader = response.body?.getReader();
+	try {
+		if (reader && response.headers.get("content-type")?.includes("json")) {
+			const chunks: Uint8Array[] = [];
+			let size = 0;
+			for (;;) {
+				const chunk = await reader.read();
+				if (chunk.done) {
+					const body = record(
+						JSON.parse(Buffer.concat(chunks).toString("utf8")),
+					);
+					const detail =
+						body.message ?? record(body.error).message ?? body.error;
+					if (typeof detail === "string")
+						message = stripVTControlCharacters(detail)
+							.replace(/\p{Cc}/gu, " ")
+							.replace(/\s+/g, " ")
+							.trim()
+							.slice(0, 512);
+					break;
+				}
+				size += chunk.value.byteLength;
+				if (size > 16 * 1024) break;
+				chunks.push(chunk.value);
+			}
+		}
+	} catch {
+		// The HTTP status remains useful when the error body cannot be read.
+	} finally {
+		await reader?.cancel().catch(() => undefined);
+		reader?.releaseLock();
+	}
+	const correlationId = response.headers.get("x-leverage-correlation-id");
+	return new ApiError(response.status, action, {
+		request: `${method} ${url.origin}${url.pathname}`,
+		message,
+		...(correlationId && /^[a-zA-Z0-9._:-]{1,128}$/.test(correlationId)
+			? { correlationId }
+			: {}),
+	});
+}
 
 function record(value: unknown): Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -628,8 +684,7 @@ export class SessionClient {
 				continue;
 			}
 			if (!response.ok) {
-				await response.body?.cancel();
-				throw new ApiError(response.status);
+				throw await requestError(response, method, this.url(path));
 			}
 			return response;
 		}
@@ -772,8 +827,12 @@ export class SessionClient {
 			},
 		);
 		if (!response.ok) {
-			await response.body?.cancel();
-			throw new ApiError(response.status, "token refresh");
+			throw await requestError(
+				response,
+				"POST",
+				new URL("/api/cli/auth/refresh", this.origin),
+				"token refresh",
+			);
 		}
 		const body = record(
 			await response.json().catch(() => {
