@@ -1,0 +1,710 @@
+import { stripVTControlCharacters } from "node:util";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import {
+	type Component,
+	Container,
+	Image,
+	Markdown,
+	Text,
+} from "@earendil-works/pi-tui";
+import type {
+	SessionMessage as ProtocolMessage,
+	SessionInbox,
+} from "@opencode/schema";
+import type { SessionEvent, SessionMessage } from "./api";
+
+export const HISTORY_ENTRY = "leverage-history";
+
+export interface HistoryFile {
+	type: "file";
+	name: string;
+	mime: string;
+	data?: string;
+	uri?: string;
+}
+interface TextPart {
+	type: "text" | "reasoning";
+	text: string;
+}
+interface ToolPart {
+	type: "tool";
+	id: string;
+	name: string;
+	status: string;
+	input: string;
+	output: string;
+	files: HistoryFile[];
+}
+export type HistoryPart = TextPart | ToolPart | HistoryFile;
+type Delivery = "queued" | "sent" | "cancelled";
+export interface HistoryEntry {
+	sessionId: string;
+	id: string;
+	role: "user" | "assistant" | "system";
+	parts: HistoryPart[];
+	delivery?: Delivery;
+	content: string;
+	created: number;
+	revision: number;
+}
+interface RecordState {
+	id: string;
+	created: number;
+	role: HistoryEntry["role"];
+	parts: Map<string, HistoryPart>;
+	completed: Set<string>;
+	delivery?: Delivery;
+	changed: number;
+}
+interface HistoryLimits {
+	maxEntries?: number;
+	maxCharacters?: number;
+}
+const PROJECTED_EVENTS = [
+	"session.inbox.enqueued",
+	"session.inbox.delivered",
+	"session.inbox.cancelled",
+	"session.step.started",
+	"session.step.failed",
+	"session.step.ended",
+	"session.text.started",
+	"session.text.delta",
+	"session.text.ended",
+	"session.reasoning.started",
+	"session.reasoning.delta",
+	"session.reasoning.ended",
+	"session.tool.input.started",
+	"session.tool.input.delta",
+	"session.tool.input.ended",
+	"session.tool.called",
+	"session.tool.progress",
+	"session.tool.success",
+	"session.tool.failed",
+] as const;
+function isProjectedEvent(
+	event: SessionEvent,
+): event is Extract<SessionEvent, { type: (typeof PROJECTED_EVENTS)[number] }> {
+	return PROJECTED_EVENTS.some((type) => type === event.type);
+}
+function plain(text: string): string {
+	return stripVTControlCharacters(text).replace(
+		/[\u0000-\u0008\u000b-\u001f\u007f]/g,
+		"",
+	);
+}
+function filePart(
+	file: NonNullable<(typeof ProtocolMessage.User.Encoded)["files"]>[number],
+): HistoryFile {
+	return {
+		type: "file",
+		name: file.name ?? "Attachment",
+		mime: file.mime,
+		...(file.source.type === "inline"
+			? { data: file.data }
+			: { uri: file.source.uri }),
+	};
+}
+function toolContent(
+	content:
+		| (typeof ProtocolMessage.ToolStateCompleted.Encoded)["content"]
+		| undefined,
+): { output: string; files: HistoryFile[] } {
+	return {
+		output: (content ?? [])
+			.flatMap((part) => (part.type === "text" ? [part.text] : []))
+			.join("\n"),
+		files: (content ?? []).flatMap((part) =>
+			part.type === "file"
+				? [
+						{
+							type: "file" as const,
+							name: part.name ?? "File",
+							mime: part.mime,
+							uri: part.uri,
+						},
+					]
+				: [],
+		),
+	};
+}
+function stateOf(message: SessionMessage): RecordState {
+	const state: RecordState = {
+		id: message.id,
+		created: message.time.created,
+		role: "system",
+		parts: new Map(),
+		completed: new Set(),
+		changed: 0,
+	};
+	const text = (value: string) =>
+		state.parts.set("text:0", { type: "text", text: value });
+	switch (message.type) {
+		case "user":
+			state.role = "user";
+			state.delivery = "sent";
+			text(message.text);
+			for (const [index, file] of (message.files ?? []).entries())
+				state.parts.set(`file:${index}`, filePart(file));
+			break;
+		case "assistant":
+			state.role = "assistant";
+			for (const [index, part] of message.content.entries()) {
+				if (part.type === "text" || part.type === "reasoning") {
+					const key = `${part.type}:${index}`;
+					state.parts.set(key, { type: part.type, text: part.text });
+					if (message.time.completed !== undefined) state.completed.add(key);
+				} else {
+					const result = toolContent(
+						part.state.status === "completed" || part.state.status === "error"
+							? part.state.content
+							: undefined,
+					);
+					state.parts.set(`tool:${part.id}`, {
+						type: "tool",
+						id: part.id,
+						name: part.name,
+						status: part.state.status,
+						input:
+							typeof part.state.input === "string"
+								? part.state.input
+								: JSON.stringify(part.state.input, null, 2),
+						output:
+							part.state.status === "error"
+								? [part.state.error.message, result.output]
+										.filter(Boolean)
+										.join("\n")
+								: result.output,
+						files: result.files,
+					});
+				}
+			}
+			if (message.error)
+				state.parts.set("error", {
+					type: "text",
+					text: `Error: ${message.error.message}`,
+				});
+			break;
+		case "system":
+		case "synthetic":
+			text(message.text);
+			break;
+		case "skill":
+			text(`Skill: ${message.name}\n${message.text}`);
+			break;
+		case "shell":
+			text(
+				`Shell: ${message.status}\n${message.command}\n${message.output?.output ?? ""}`,
+			);
+			break;
+		case "compaction":
+			text(
+				message.status === "failed"
+					? `Compaction failed: ${message.error.message}`
+					: `Compaction: ${message.status}\n${message.summary}`,
+			);
+			break;
+		case "idle":
+			if (message.outcome !== "succeeded") text(`Turn ${message.outcome}`);
+			break;
+		case "agent-switched":
+			text(`Agent: ${message.agent}`);
+			break;
+		case "model-switched":
+			text(`Model: ${message.model.id}`);
+			break;
+		case "location-switched":
+			text(`Folder: ${message.location.directory}`);
+			break;
+	}
+	return state;
+}
+function partText(part: HistoryPart): string {
+	switch (part.type) {
+		case "text":
+			return part.text;
+		case "reasoning":
+			return `Thinking\n${part.text}`;
+		case "file":
+			return `[Attachment: ${part.name} (${part.mime})]`;
+		case "tool":
+			return [
+				`${part.name} · ${part.status}`,
+				part.input,
+				part.output,
+				...part.files.map(partText),
+			]
+				.filter(Boolean)
+				.join("\n");
+	}
+}
+function isPart(value: unknown): value is HistoryPart {
+	if (!value || typeof value !== "object") return false;
+	const part = value as Partial<HistoryPart>;
+	if (part.type === "text" || part.type === "reasoning")
+		return typeof part.text === "string";
+	if (part.type === "file")
+		return (
+			typeof part.name === "string" &&
+			typeof part.mime === "string" &&
+			(part.data === undefined || typeof part.data === "string") &&
+			(part.uri === undefined || typeof part.uri === "string")
+		);
+	return (
+		part.type === "tool" &&
+		typeof part.id === "string" &&
+		typeof part.name === "string" &&
+		typeof part.status === "string" &&
+		typeof part.input === "string" &&
+		typeof part.output === "string" &&
+		Array.isArray(part.files) &&
+		part.files.every((file) => isPart(file) && file.type === "file")
+	);
+}
+export function isHistoryEntry(value: unknown): value is HistoryEntry {
+	if (!value || typeof value !== "object") return false;
+	const entry = value as Partial<HistoryEntry>;
+	return (
+		typeof entry.sessionId === "string" &&
+		typeof entry.id === "string" &&
+		typeof entry.content === "string" &&
+		(entry.role === "user" ||
+			entry.role === "assistant" ||
+			entry.role === "system") &&
+		Array.isArray(entry.parts) &&
+		entry.parts.every(isPart) &&
+		(entry.delivery === undefined ||
+			entry.delivery === "queued" ||
+			entry.delivery === "sent" ||
+			entry.delivery === "cancelled") &&
+		typeof entry.created === "number" &&
+		Number.isFinite(entry.created) &&
+		typeof entry.revision === "number" &&
+		Number.isFinite(entry.revision)
+	);
+}
+export function createHistoryComponent(
+	read: () => HistoryEntry | undefined,
+	expanded = false,
+): Component {
+	let previous: HistoryEntry | undefined;
+	let rendered: Container | undefined;
+	const files = (container: Container, attachments: HistoryFile[]) => {
+		for (const file of attachments) {
+			container.addChild(
+				new Text(plain(`[${file.name} · ${file.mime}]`), 0, 0),
+			);
+			if (
+				file.data &&
+				/^image\/(png|jpeg|gif|webp)$/.test(file.mime) &&
+				/^[A-Za-z0-9+/]*={0,2}$/.test(file.data)
+			)
+				container.addChild(
+					new Image(
+						file.data,
+						file.mime,
+						{ fallbackColor: (text) => text },
+						{
+							filename: plain(file.name),
+							maxWidthCells: 70,
+							maxHeightCells: 25,
+						},
+					),
+				);
+		}
+	};
+	return {
+		invalidate() {
+			rendered?.invalidate();
+		},
+		render(width) {
+			const entry = read();
+			if (!entry) return [];
+			if (entry !== previous || !rendered) {
+				previous = entry;
+				rendered = new Container();
+				const label =
+					entry.role === "user"
+						? "User"
+						: entry.role === "assistant"
+							? "Assistant"
+							: "Session";
+				rendered.addChild(
+					new Text(
+						`${label}${entry.delivery && entry.delivery !== "sent" ? ` · ${entry.delivery}` : ""}`,
+						0,
+						1,
+					),
+				);
+				for (const part of entry.parts) {
+					switch (part.type) {
+						case "text":
+							rendered.addChild(
+								new Markdown(plain(part.text), 0, 0, getMarkdownTheme()),
+							);
+							break;
+						case "reasoning":
+							rendered.addChild(new Text("Thinking", 0, 0));
+							if (expanded)
+								rendered.addChild(
+									new Markdown(plain(part.text), 0, 0, getMarkdownTheme()),
+								);
+							break;
+						case "file":
+							files(rendered, [part]);
+							break;
+						case "tool":
+							rendered.addChild(
+								new Text(plain(`${part.name} · ${part.status}`), 0, 1),
+							);
+							if (part.input)
+								rendered.addChild(new Text(plain(part.input), 1, 0));
+							if (part.output)
+								rendered.addChild(new Text(plain(part.output), 1, 0));
+							files(rendered, part.files);
+							break;
+					}
+				}
+			}
+			return rendered.render(width);
+		},
+	};
+}
+
+export class SharedHistory {
+	private readonly records = new Map<string, RecordState>();
+	private readonly displayed = new Map<string, HistoryEntry>();
+	private readonly eventIds = new Set<string>();
+	private readonly delivery = new Map<string, Delivery>();
+	private readonly maxEntries: number;
+	private readonly maxCharacters: number;
+	private clock = 0;
+	private latestLoad = 0;
+	constructor(
+		readonly sessionId: string,
+		restored: readonly unknown[] = [],
+		limits: HistoryLimits = {},
+	) {
+		this.maxEntries = limits.maxEntries ?? 200;
+		this.maxCharacters = limits.maxCharacters ?? 32 * 1024 * 1024;
+		for (const value of restored)
+			if (isHistoryEntry(value) && value.sessionId === sessionId) {
+				this.displayed.set(value.id, value);
+				if (value.delivery) this.delivery.set(value.id, value.delivery);
+			}
+		this.trim();
+	}
+	beginLoad(): number {
+		this.latestLoad = ++this.clock;
+		return this.latestLoad;
+	}
+	merge(
+		messages: readonly SessionMessage[],
+		load = this.latestLoad,
+	): HistoryEntry[] {
+		if (load < this.latestLoad) return [];
+		const changes: HistoryEntry[] = [];
+		for (const message of messages) {
+			const existing = this.records.get(message.id);
+			// Events received during the request own the newer value.
+			if (existing && existing.changed > load) continue;
+			const state = stateOf(message);
+			state.changed = load;
+			if (state.delivery) {
+				if (this.delivery.get(state.id) === "cancelled")
+					state.delivery = "cancelled";
+				this.delivery.set(state.id, state.delivery);
+			}
+			this.records.set(message.id, state);
+			changes.push(...this.publish(state));
+		}
+		this.trim();
+		return changes.filter((entry) => this.displayed.has(entry.id));
+	}
+	inbox(items: readonly (typeof SessionInbox.Info.Encoded)[]): HistoryEntry[] {
+		const changes: HistoryEntry[] = [];
+		for (const item of items) {
+			if (
+				item.sessionID !== this.sessionId ||
+				(item.type !== "user" && item.type !== "synthetic")
+			)
+				continue;
+			const state = stateOf({
+				id: item.id,
+				type: item.type,
+				text: item.payload.text,
+				...(item.type === "user" ? { files: item.payload.files } : {}),
+				time: item.time,
+			});
+			const existing = this.records.get(item.id);
+			if (existing) {
+				state.created = existing.created;
+				for (const [key, part] of existing.parts)
+					if (
+						(part.type === "file" && !state.parts.has(key)) ||
+						(part.type === "text" && existing.delivery === "sent")
+					)
+						state.parts.set(key, part);
+			}
+			state.delivery = this.delivery.get(item.id) ?? "queued";
+			state.changed = ++this.clock;
+			this.records.set(item.id, state);
+			changes.push(...this.publish(state));
+		}
+		this.trim();
+		return changes.filter((entry) => this.displayed.has(entry.id));
+	}
+	apply(event: SessionEvent): HistoryEntry[] {
+		if (
+			!isProjectedEvent(event) ||
+			event.data.sessionID !== this.sessionId ||
+			this.eventIds.has(event.id)
+		)
+			return [];
+		this.eventIds.add(event.id);
+		if (this.eventIds.size > 2_000)
+			this.eventIds.delete(this.eventIds.values().next().value!);
+		const changed = ++this.clock;
+		const at = "created" in event ? event.created : 0;
+		const assistant = (id: string) => {
+			let state = this.records.get(id);
+			if (!state) {
+				state = {
+					id,
+					created: at,
+					role: "assistant",
+					parts: new Map(),
+					completed: new Set(),
+					changed,
+				};
+				this.records.set(id, state);
+			}
+			state.changed = changed;
+			return state;
+		};
+		const tool = (messageId: string, id: string) => {
+			const state = assistant(messageId);
+			const key = `tool:${id}`;
+			let part = state.parts.get(key);
+			if (part?.type !== "tool") {
+				part = {
+					type: "tool",
+					id,
+					name: "Tool",
+					status: "streaming",
+					input: "",
+					output: "",
+					files: [],
+				};
+				state.parts.set(key, part);
+			}
+			return { state, part };
+		};
+		let state: RecordState;
+		switch (event.type) {
+			case "session.inbox.enqueued":
+				return this.inbox([
+					{
+						id: event.data.inboxID,
+						sessionID: this.sessionId,
+						...event.data.item,
+						time: { created: at },
+					},
+				]);
+			case "session.inbox.delivered":
+			case "session.inbox.cancelled": {
+				const id = event.data.inboxID;
+				const delivery =
+					event.type === "session.inbox.cancelled" ? "cancelled" : "sent";
+				this.delivery.set(id, delivery);
+				const existing = this.records.get(id);
+				if (!existing) return [];
+				state = existing;
+				state.delivery = delivery;
+				state.changed = changed;
+				break;
+			}
+			case "session.step.started":
+				state = assistant(event.data.assistantMessageID);
+				state.created = event.data.started;
+				this.trim();
+				return [];
+			case "session.step.ended":
+				state = assistant(event.data.assistantMessageID);
+				for (const key of state.parts.keys())
+					if (!key.startsWith("tool:")) state.completed.add(key);
+				break;
+			case "session.text.started":
+			case "session.reasoning.started": {
+				state = assistant(event.data.assistantMessageID);
+				const type =
+					event.type === "session.text.started" ? "text" : "reasoning";
+				const key = `${type}:${event.data.ordinal}`;
+				if (!state.parts.has(key)) state.parts.set(key, { type, text: "" });
+				break;
+			}
+			case "session.text.delta":
+			case "session.reasoning.delta": {
+				state = assistant(event.data.assistantMessageID);
+				const type = event.type === "session.text.delta" ? "text" : "reasoning";
+				const key = `${type}:${event.data.ordinal}`;
+				const previous = state.parts.get(key);
+				if (!state.completed.has(key))
+					state.parts.set(key, {
+						type,
+						text:
+							(previous &&
+							(previous.type === "text" || previous.type === "reasoning")
+								? previous.text
+								: "") + event.data.delta,
+					});
+				break;
+			}
+			case "session.text.ended":
+			case "session.reasoning.ended": {
+				state = assistant(event.data.assistantMessageID);
+				const type = event.type === "session.text.ended" ? "text" : "reasoning";
+				const key = `${type}:${event.data.ordinal}`;
+				state.parts.set(key, { type, text: event.data.text });
+				state.completed.add(key);
+				break;
+			}
+			case "session.tool.input.started": {
+				const value = tool(event.data.assistantMessageID, event.data.id);
+				state = value.state;
+				value.part.name = event.data.name;
+				break;
+			}
+			case "session.tool.input.delta": {
+				const value = tool(event.data.assistantMessageID, event.data.id);
+				state = value.state;
+				if (value.part.status === "streaming")
+					value.part.input += event.data.delta;
+				break;
+			}
+			case "session.tool.input.ended": {
+				const value = tool(event.data.assistantMessageID, event.data.id);
+				state = value.state;
+				if (value.part.status === "streaming")
+					value.part.input = event.data.text;
+				break;
+			}
+			case "session.tool.called": {
+				const value = tool(event.data.assistantMessageID, event.data.id);
+				state = value.state;
+				if (value.part.status === "streaming") {
+					value.part.input = JSON.stringify(event.data.input, null, 2);
+					value.part.status = "running";
+				}
+				break;
+			}
+			case "session.tool.progress": {
+				const value = tool(event.data.assistantMessageID, event.data.id);
+				state = value.state;
+				if (value.part.status === "running") {
+					const output =
+						event.data.metadata.output ?? event.data.metadata.progress;
+					if (typeof output === "string") value.part.output = output;
+				}
+				break;
+			}
+			case "session.tool.success":
+			case "session.tool.failed": {
+				const value = tool(event.data.assistantMessageID, event.data.id);
+				state = value.state;
+				const result = toolContent(event.data.content);
+				value.part.status =
+					event.type === "session.tool.success" ? "completed" : "error";
+				value.part.output =
+					event.type === "session.tool.failed"
+						? [event.data.error.message, result.output]
+								.filter(Boolean)
+								.join("\n")
+						: result.output;
+				value.part.files = result.files;
+				break;
+			}
+			case "session.step.failed":
+				state = assistant(event.data.assistantMessageID);
+				state.parts.set("error", {
+					type: "text",
+					text: `Error: ${event.data.error.message}`,
+				});
+				break;
+		}
+		const result = this.publish(state);
+		this.trim();
+		return result.filter((entry) => this.displayed.has(entry.id));
+	}
+	entries(): HistoryEntry[] {
+		return [...this.displayed.values()].sort((a, b) => a.created - b.created);
+	}
+	private publish(state: RecordState): HistoryEntry[] {
+		const parts = [...state.parts.values()].map((part) =>
+			part.type === "tool" ? { ...part, files: [...part.files] } : { ...part },
+		);
+		const body = parts.map(partText).filter(Boolean).join("\n\n");
+		if (!body) return [];
+		const label =
+			state.role === "user"
+				? "User"
+				: state.role === "assistant"
+					? "Assistant"
+					: "Session";
+		const content = `${label}${state.delivery && state.delivery !== "sent" ? ` · ${state.delivery}` : ""}\n${body}`;
+		const prior = this.displayed.get(state.id);
+		if (
+			prior?.content === content &&
+			JSON.stringify(prior.parts) === JSON.stringify(parts)
+		)
+			return [];
+		const entry: HistoryEntry = {
+			sessionId: this.sessionId,
+			id: state.id,
+			role: state.role,
+			parts,
+			delivery: state.delivery,
+			created: state.created,
+			content,
+			revision: (prior?.revision ?? 0) + 1,
+		};
+		this.displayed.set(state.id, entry);
+		return [entry];
+	}
+	private trim(): void {
+		let characters = 0;
+		let kept = 0;
+		for (const entry of this.entries().reverse()) {
+			const size =
+				entry.content.length +
+				entry.parts.reduce(
+					(sum, part) =>
+						sum +
+						(part.type === "file"
+							? (part.data?.length ?? 0)
+							: part.type === "tool"
+								? part.files.reduce(
+										(total, file) => total + (file.data?.length ?? 0),
+										0,
+									)
+								: 0),
+					0,
+				);
+			characters += size;
+			kept += 1;
+			if (kept > this.maxEntries || characters > this.maxCharacters) {
+				this.displayed.delete(entry.id);
+				this.records.delete(entry.id);
+			}
+		}
+		if (this.records.size > this.maxEntries * 2)
+			for (const [id] of this.records) {
+				if (this.records.size <= this.maxEntries * 2) break;
+				if (!this.displayed.has(id)) this.records.delete(id);
+			}
+		if (this.delivery.size > 2_000)
+			for (const [id] of this.delivery) {
+				if (this.delivery.size <= 2_000) break;
+				this.delivery.delete(id);
+			}
+	}
+}

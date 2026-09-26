@@ -1,0 +1,63 @@
+{
+	"name": "@leverage/pi",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Use Pi as a frontend for shared Leverage agent sessions",
+	"keywords": [
+		"pi-package"
+	],
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"files": [
+		"src",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"test": "bun test tests",
+		"test:unit": "bun run test",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"lint:typed": "eslint src tests --max-warnings=0",
+		"format": "biome check --write .",
+		"format:check": "biome check .",
+		"build": "bun build src/index.ts --target=node --packages=external --outdir=dist",
+		"check": "bun run format:check && bun run lint:typed && bun run typecheck && bun run test && bun run build"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.85.1",
+		"@earendil-works/pi-tui": "0.85.1",
+		"@types/bun": "1.4.0",
+		"typescript": "5.9.3",
+		"@biomejs/biome": "2.4.16",
+		"eslint": "9.39.4",
+		"typescript-eslint": "8.60.0"
+	},
+	"dependencies": {
+		"@opencode/protocol": "2.0.12",
+		"@opencode/schema": "2.0.12",
+		"effect": "4.0.0-rc.112",
+		"ajv": "8.20.0"
+	},
+	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/thepresciencecompany/pi-plugin.git"
+	},
+	"bugs": {
+		"url": "https://github.com/thepresciencecompany/pi-plugin/issues"
+	},
+	"packageManager": "bun@1.4.2"
+}
