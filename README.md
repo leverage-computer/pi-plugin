@@ -6,14 +6,16 @@ prepares the remote files. Pi displays the session and sends your input through
 the same API as OpenCode. You do not need model credentials in Pi.
 
 ```text
-Pi / OpenCode / Leverage web app
-             |
-      shared session API
-             |
-  Leverage agent + remote tools
-             |
- shared messages, files, approvals
+Pi / OpenCode              Leverage web app
+      |                          |
+ OpenCode API              existing web API
+      |                          |
+      +--- shared sessions ------+
+                   |
+       hosted agent + remote tools
 ```
+
+See the [architecture diagrams and ownership guide](ARCHITECTURE.md).
 
 ## Install
 
