@@ -101,16 +101,12 @@ async function terminal(
 	return { f, wait, key, output: () => output };
 }
 
-test("wide Pi terminal opens settings with F2 and returns the untouched draft without creating a session", async () => {
+test("wide Pi terminal changes sharing with F3 and returns the untouched draft without creating a session", async () => {
 	const ui = await terminal(120);
 	await ui.key("Keep this draft /tmp/attachment.png");
-	await ui.key("\x1bOQ");
-	await ui.wait("New session settings");
-	await ui.key("Sharing\r");
+	await ui.key("\x1bOR");
 	await ui.wait("Session visibility");
 	await ui.key("Private\r");
-	await ui.wait("New session settings");
-	await ui.key("\x1b");
 	await ui.wait("Keep this draft /tmp/attachment.png");
 	expect(ui.f.state.createCount).toBe(0);
 	expect(ui.f.requests.some((r) => r.method !== "GET")).toBe(false);
@@ -120,7 +116,7 @@ test("wide Pi terminal opens settings with F2 and returns the untouched draft wi
 test("narrow Pi terminal sends a channel message and thread reply, then restores the session draft", async () => {
 	const ui = await terminal(64);
 	await ui.key("My session draft");
-	await ui.key("\x1bOR");
+	await ui.key("\x1b[18~");
 	await ui.wait("Leverage channels");
 	await ui.key("general\r");
 	await ui.wait("#general");

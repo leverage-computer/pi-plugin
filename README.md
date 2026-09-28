@@ -38,8 +38,9 @@ The plugin reads your existing Leverage CLI profile. If the CLI is unavailable,
 you can instead supply `LEVERAGE_HOST`, `LEVERAGE_WORKSPACE`, and `LEVERAGE_TOKEN`
 through your environment. See the connection settings below.
 
-Pi opens its normal empty composer. Press F2 to configure the draft, F6 to open
-a session, or F3 to browse channels. Type normally to send a shared message. Everyone viewing that task can see your message and the agent's answer.
+Pi opens its normal empty composer. Press F1 context, F2 model, F3 sharing,
+F4 people, or F5 provider to change one draft setting. Press F6 to open a
+session, or F7 to browse channels. Type normally to send a shared message. Everyone viewing that task can see your message and the agent's answer.
 Messages from the web app or another Pi client appear in the same conversation.
 Opening a session reads its state without starting compute or an agent turn.
 
@@ -57,16 +58,16 @@ For a pinned composer and activity strip, launch `pi --tui-mode fullscreen`.
 | `/leverage` | Browse, search, and open sessions |
 | `/leverage sessions <text>` | Search session titles |
 | `/leverage new <title>` | Open a local draft; create the session on first submission |
-| `/leverage settings` / F2 | Context, branch, provider/model/effort, mode, knowledge, sharing |
-| `/leverage channels` / F3 | Search channels, read messages, reply in threads, open sessions |
+| `/leverage settings` / F1–F5 | Context, branch, provider/model/effort, mode, knowledge, sharing |
+| `/leverage channels` / F7 | Search channels, read messages, reply in threads, open sessions |
 | `/leverage share` | Visibility, copy link, invite people/channels, change or revoke roles |
-| `/leverage changes` / F4 | Changed files, line counts, renames, and unified diffs |
+| `/leverage changes` / F8 | Changed files, line counts, renames, and unified diffs |
 | `/leverage open <id>` | Open a task by ID |
 | `/leverage history` | Scroll through history and older/newer pages |
 | `/leverage stop` | Stop the shared agent turn |
 | `/leverage queue <message>` | Queue a message for the next turn |
 | `/leverage inbox` | Inspect waiting messages and take back a queued message |
-| `/leverage approvals` / F5 | Inspect pending requests, decide, and view recent decisions |
+| `/leverage approvals` / F9 | Inspect pending requests, decide, and view recent decisions |
 | `/leverage questions` | Answer pending questions and approval scope forms |
 | `/leverage model` | Choose the session's hosted model and reasoning effort |
 | `/leverage compact` | Ask Leverage to compact the shared context |

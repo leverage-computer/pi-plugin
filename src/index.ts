@@ -50,6 +50,14 @@ type Prompt = {
 	delivery: "steer" | "queue";
 };
 
+// F1-F5 open these draft settings directly.
+const SETTING_SECTIONS = [
+	"context",
+	"model",
+	"visibility",
+	"members",
+	"provider",
+] as const;
 // Pi creates a new extension instance when it switches sessions.
 const composerDrafts = new Map<string, string>();
 const workspaceConversations = new Map<
@@ -191,7 +199,7 @@ export default function leverage(pi: ExtensionAPI): void {
 									"Setup not confirmed. /leverage retry continues the same session.",
 								]
 							: []),
-						"F2 Settings · F3 Channels · F6 Sessions",
+						"F1 Context · F2 Model · F3 Sharing · F4 People · F5 Provider · F6 Sessions · F7 Channels",
 					],
 		);
 	};
@@ -745,7 +753,7 @@ export default function leverage(pi: ExtensionAPI): void {
 				new Text(
 					theme.fg(
 						"accent",
-						"Leverage · /leverage new · /leverage sessions · F2 Settings · F3 Channels · F4 Changes · F5 Approvals",
+						"Leverage · F1–F5 Settings · F6 Sessions · F7 Channels · F8 Changes · F9 Approvals",
 					),
 					1,
 					1,
@@ -949,6 +957,10 @@ export default function leverage(pi: ExtensionAPI): void {
 					return;
 				}
 				if (action === "settings" || (action === "model" && !selected)) {
+					const section =
+						action === "model"
+							? "model"
+							: SETTING_SECTIONS.find((one) => one === words[0]);
 					if (!selected) {
 						await draftLoading;
 						if (!draft) throw new Error(failure);
@@ -958,19 +970,34 @@ export default function leverage(pi: ExtensionAPI): void {
 							draft,
 							lifetime.signal,
 							() => status(ctx),
-							action === "model" ? "model" : undefined,
+							section,
 						);
 					} else {
-						const picked = await chooseDrawer(
-							ctx,
-							"Session settings",
-							[
-								{ value: "model", label: "Model and reasoning", detail: model },
-								{ value: "share", label: "Sharing and collaborators" },
-								{ value: "info", label: "Session details" },
-							],
-							lifetime.signal,
-						);
+						// An open session has fewer settings, so each key maps to the nearest one.
+						const picked =
+							section === "model" || section === "provider"
+								? "model"
+								: section === "visibility" || section === "members"
+									? "share"
+									: section === "context"
+										? "info"
+										: await chooseDrawer(
+												ctx,
+												"Session settings",
+												[
+													{
+														value: "model",
+														label: "Model and reasoning",
+														detail: model,
+													},
+													{
+														value: "share",
+														label: "Sharing and collaborators",
+													},
+													{ value: "info", label: "Session details" },
+												],
+												lifetime.signal,
+											);
 						if (picked === "model") await interactions!.show("model");
 						if (picked === "share" && shared?.session)
 							await shareSession(
@@ -1130,11 +1157,15 @@ export default function leverage(pi: ExtensionAPI): void {
 		},
 	});
 	for (const [key, action] of [
-		["f2", "settings"],
-		["f3", "channels"],
-		["f4", "changes"],
-		["f5", "approvals"],
+		["f1", "settings context"],
+		["f2", "settings model"],
+		["f3", "settings visibility"],
+		["f4", "settings members"],
+		["f5", "settings provider"],
 		["f6", "sessions"],
+		["f7", "channels"],
+		["f8", "changes"],
+		["f9", "approvals"],
 	] as const)
 		pi.registerShortcut(key, {
 			description: `Leverage ${action}`,

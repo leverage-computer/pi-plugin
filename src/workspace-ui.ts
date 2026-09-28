@@ -392,6 +392,8 @@ export async function editDraft(
 			);
 		}
 		changed();
+		// A direct setting key returns to the composer after one change.
+		if (initial) return;
 		action = undefined;
 	}
 }
