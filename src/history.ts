@@ -12,6 +12,8 @@ import type {
 	SessionInbox,
 } from "@opencode/schema";
 import type { SessionEvent, SessionMessage } from "./api";
+import { nativeId } from "./workspace-api";
+import type { SessionInput, WorkspaceMember } from "./workspace-schema";
 
 export const HISTORY_ENTRY = "leverage-history";
 
@@ -38,6 +40,9 @@ interface ToolPart {
 export type HistoryPart = TextPart | ToolPart | HistoryFile;
 type Delivery = "queued" | "sent" | "cancelled";
 export interface HistoryEntry {
+	author?: string;
+	harness?: string | null;
+	status?: string;
 	sessionId: string;
 	id: string;
 	role: "user" | "assistant" | "system";
@@ -288,6 +293,23 @@ export function createHistoryComponent(
 ): Component {
 	let previous: HistoryEntry | undefined;
 	let rendered: Container | undefined;
+	const toolText = (value: string): Component => {
+		const body = new Text(plain(value), 1, 0);
+		return {
+			invalidate: () => body.invalidate(),
+			render(width) {
+				const lines = body.render(width);
+				return expanded || lines.length <= 6
+					? lines
+					: [
+							...lines.slice(0, 6),
+							...new Text("… Expand tools to see all output", 1, 0).render(
+								width,
+							),
+						];
+			},
+		};
+	};
 	const files = (container: Container, attachments: HistoryFile[]) => {
 		for (const file of attachments) {
 			container.addChild(
@@ -324,13 +346,15 @@ export function createHistoryComponent(
 				rendered = new Container();
 				const label =
 					entry.role === "user"
-						? "User"
+						? (entry.author ?? "User")
 						: entry.role === "assistant"
 							? "Assistant"
 							: "Session";
 				rendered.addChild(
 					new Text(
-						`${label}${entry.delivery && entry.delivery !== "sent" ? ` · ${entry.delivery}` : ""}`,
+						plain(
+							`${label}${entry.created ? ` · ${new Date(entry.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}${entry.harness === "codex" ? " · Sent from Codex" : entry.harness === "claude" ? " · Sent from Claude" : ""}${entry.status ? ` · ${entry.status}` : entry.delivery && entry.delivery !== "sent" ? ` · ${entry.delivery}` : ""}`,
+						),
 						0,
 						1,
 					),
@@ -356,10 +380,8 @@ export function createHistoryComponent(
 							rendered.addChild(
 								new Text(plain(`${part.name} · ${part.status}`), 0, 1),
 							);
-							if (part.input)
-								rendered.addChild(new Text(plain(part.input), 1, 0));
-							if (part.output)
-								rendered.addChild(new Text(plain(part.output), 1, 0));
+							if (part.input) rendered.addChild(toolText(part.input));
+							if (part.output) rendered.addChild(toolText(part.output));
 							files(rendered, part.files);
 							break;
 					}
@@ -371,6 +393,9 @@ export function createHistoryComponent(
 }
 
 export class SharedHistory {
+	private readonly authors = new Map<string, SessionInput>();
+	private members: readonly WorkspaceMember[] = [];
+	private viewerId?: string;
 	private readonly records = new Map<string, RecordState>();
 	private readonly displayed = new Map<string, HistoryEntry>();
 	private readonly eventIds = new Set<string>();
@@ -396,6 +421,20 @@ export class SharedHistory {
 	beginLoad(): number {
 		this.latestLoad = ++this.clock;
 		return this.latestLoad;
+	}
+	attribute(
+		inputs: Iterable<SessionInput>,
+		members: readonly WorkspaceMember[],
+		viewerId?: string,
+	): HistoryEntry[] {
+		this.members = members;
+		this.viewerId = viewerId;
+		for (const input of inputs) this.authors.set(input.uuid, input);
+		while (this.authors.size > 1000)
+			this.authors.delete(this.authors.keys().next().value!);
+		return [...this.records.values()].flatMap((record) =>
+			record.role === "user" ? this.publish(record) : [],
+		);
 	}
 	merge(
 		messages: readonly SessionMessage[],
@@ -639,14 +678,29 @@ export class SharedHistory {
 		return [...this.displayed.values()].sort((a, b) => a.created - b.created);
 	}
 	private publish(state: RecordState): HistoryEntry[] {
+		const input =
+			state.role === "user" ? this.authors.get(nativeId(state.id)) : undefined;
+		const author = input
+			? (this.members.find((one) => one.id === input.authorId)?.name ??
+				input.authorName ??
+				(input.authorId === null ? "Leverage" : "Unknown member"))
+			: undefined;
+		const authorLabel = author
+			? `${author}${input?.authorId === this.viewerId ? " (you)" : ""}`
+			: undefined;
 		const parts = [...state.parts.values()].map((part) =>
 			part.type === "tool" ? { ...part, files: [...part.files] } : { ...part },
 		);
+		if (input) {
+			const texts = parts.filter((part) => part.type === "text");
+			if (texts.length === 1 && texts[0].type === "text")
+				texts[0].text = input.content;
+		}
 		const body = parts.map(partText).filter(Boolean).join("\n\n");
 		if (!body) return [];
 		const label =
 			state.role === "user"
-				? "User"
+				? (authorLabel ?? "User")
 				: state.role === "assistant"
 					? "Assistant"
 					: "Session";
@@ -654,13 +708,18 @@ export class SharedHistory {
 		const prior = this.displayed.get(state.id);
 		if (
 			prior?.content === content &&
-			JSON.stringify(prior.parts) === JSON.stringify(parts)
+			JSON.stringify(prior.parts) === JSON.stringify(parts) &&
+			prior.harness === input?.harness &&
+			prior.status === input?.status
 		)
 			return [];
 		const entry: HistoryEntry = {
 			sessionId: this.sessionId,
 			id: state.id,
 			role: state.role,
+			author: authorLabel,
+			harness: input?.harness,
+			status: input?.status,
 			parts,
 			delivery: state.delivery,
 			created: state.created,

@@ -26,6 +26,7 @@ import type {
 } from "../src/api";
 import { HISTORY_ENTRY } from "../src/history";
 import { LINK_ENTRY, sessionLink } from "../src/session-ui";
+import { nativeId } from "../src/workspace-api";
 
 const directories: string[] = [];
 const disposals: Array<() => void | Promise<void>> = [];
@@ -157,7 +158,9 @@ function serverFixture(
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: 0,
-		async fetch(request) {
+		async fetch(request, server) {
+			if (new URL(request.url).pathname === "/ws" && server.upgrade(request))
+				return;
 			const url = new URL(request.url);
 			const text =
 				request.method === "POST" || request.method === "PATCH"
@@ -168,6 +171,50 @@ function serverFixture(
 			const path = url.pathname;
 			if (state.denied || (state.streamDenied && path.endsWith("/event")))
 				return Response.json({ message: "Access denied" }, { status: 403 });
+			if (path === "/api/workspaces")
+				return Response.json([{ id: "workspace", slug: "demo" }]);
+			if (path === "/api/users")
+				return Response.json([{ id: "owner", name: "Test owner" }]);
+			if (path === "/api/channels")
+				return Response.json([
+					{
+						id: "channel",
+						name: "project",
+						defaultProviderFamily: "claude_code",
+					},
+				]);
+			if (path.endsWith("/provider-family-settings"))
+				return Response.json({ settings: [] });
+			if (path.endsWith("/provider-access/availability"))
+				return Response.json({ claude_code: true, codex: false });
+			if (path.endsWith("/session-sharing-defaults"))
+				return Response.json({ defaultVisibility: "private" });
+			if (path.endsWith("/file-sources"))
+				return Response.json({ sources: [], working: false });
+			if (path.endsWith("/live-file-status"))
+				return Response.json({ available: true, files: [] });
+			if (path.endsWith("/bootstrap")) {
+				const session =
+					sessions.find((one) => path.includes(nativeId(one.id))) ??
+					sharedSession;
+				return Response.json({
+					session: {
+						id: nativeId(session.id),
+						title: session.title,
+						channelId: null,
+						visibility: "private",
+						providerFamily: "claude_code",
+						model: null,
+						mode: "yolo",
+						status: "idle",
+						ownerId: "owner",
+					},
+					messages: [],
+					version: 0,
+					lastCursorIncluded: 0,
+					viewerCanWrite: true,
+				});
+			}
 			if (path.endsWith("/api/event")) {
 				let stream: ReadableStreamDefaultController<Uint8Array>;
 				return new Response(
@@ -287,6 +334,12 @@ function serverFixture(
 				? Response.json({ data: session })
 				: new Response(null, { status: 404 });
 		},
+		websocket: {
+			open(ws) {
+				ws.send(JSON.stringify({ type: "connection.ready", userId: "owner" }));
+			},
+			message() {},
+		},
 	});
 	const previousToken = process.env.LEVERAGE_TOKEN;
 	process.env.LEVERAGE_TOKEN = "test-device-token";
@@ -402,6 +455,22 @@ function event<T extends SessionEvent["type"]>(
 }
 
 describe("Pi hosted frontend", () => {
+	test("opens newest-first history pages in chronological chat order", async () => {
+		const fixture = serverFixture();
+		fixture.histories.set(sharedSession.id, [
+			user("msg_later", "The later message", 20),
+			user("msg_earlier", "The earlier message", 10),
+		]);
+		const runner = await load();
+		fixture.configure(runner, sharedSession.id);
+		await runner.emit({ type: "session_start", reason: "startup" });
+		const content = transcript(runner);
+		expect(content).toContain("The later message");
+		expect(content.indexOf("The earlier message")).toBeLessThan(
+			content.indexOf("The later message"),
+		);
+	});
+
 	test("loads through Pi, disables local tools, and keeps disconnected input handled", async () => {
 		const fixture = serverFixture();
 		fixture.state.denied = true;
@@ -527,79 +596,59 @@ describe("Pi hosted frontend", () => {
 		).toHaveLength(2);
 	}, 15000);
 
-	test("startup picker opens a separate view seeded with its remote association", async () => {
+	test("startup leaves the normal composer empty without opening a picker or creating a remote session", async () => {
 		const fixture = serverFixture();
-		let dispatch: Promise<void> | undefined;
-		const runner = await load({
-			sendUserMessage(content, settings) {
-				expect(settings?.expandPromptTemplates).toBe(true);
-				expect(content).toBe(`/leverage open ${sharedSession.id}`);
-				dispatch = command(runner, `open ${sharedSession.id}`);
-			},
-		});
+		const runner = await load();
 		fixture.configure(runner);
-		const replacement = SessionManager.inMemory(runner.createContext().cwd);
-		commandActions(runner, {
-			newSession: async (options) => {
-				await options?.setup?.(replacement);
-				return { cancelled: false };
-			},
-		});
-		const choices: string[] = [];
+		const widgets: string[][] = [];
 		runner.setUIContext(
 			{
 				...runner.getUIContext(),
-				select: async (_title, options) => {
-					choices.push(...options);
-					return options.find((option) => option.includes(sharedSession.id));
+				select: async () => {
+					throw new Error("Startup must not open a picker");
+				},
+				setWidget: (_key, value) => {
+					if (Array.isArray(value)) widgets.push(value);
 				},
 			},
 			"tui",
 		);
 		await runner.emit({ type: "session_start", reason: "startup" });
-		await dispatch;
-		expect(choices.join("\n")).toContain(sharedSession.title!);
-		expect(sessionLink(replacement.getBranch())?.sessionId).toBe(
-			sharedSession.id,
+		await eventually(() =>
+			widgets.some((lines) =>
+				lines.some((line) => line.includes("Standalone")),
+			),
 		);
-		expect(replacement.getSessionName()).toBe(sharedSession.title);
+		expect(widgets.flat().join("\n")).toContain("New Leverage session");
 		expect(fixture.requests.every((request) => request.method === "GET")).toBe(
 			true,
 		);
-		expect(runner.createContext().sessionManager.getBranch()).toEqual([]);
+		expect(
+			sessionLink(runner.createContext().sessionManager.getBranch()),
+		).toBeUndefined();
 	});
 
-	test("new sessions select their remote folder and title without submitting a prompt", async () => {
+	test("new sessions create a local draft without a remote task or prompt", async () => {
 		const fixture = serverFixture();
 		const runner = await load();
 		fixture.configure(runner);
-		runner.setFlagValue("leverage-directory", "/demo/project");
-		const replacement = SessionManager.inMemory(runner.createContext().cwd);
+		let opened = false;
 		commandActions(runner, {
-			newSession: async (options) => {
-				await options?.setup?.(replacement);
+			newSession: async () => {
+				opened = true;
+				await runner.emit({ type: "session_start", reason: "new" });
 				return { cancelled: false };
 			},
 		});
 		await command(runner, "new Explore the project");
-		const link = sessionLink(replacement.getBranch());
-		expect(link?.sessionId).toBe(fixture.sessions[1]?.id);
-		expect(replacement.getSessionName()).toBe("Explore the project");
+		expect(opened).toBe(true);
+		expect(fixture.sessions).toHaveLength(1);
+		expect(fixture.requests.some((request) => request.method !== "GET")).toBe(
+			false,
+		);
 		expect(
-			fixture.requests
-				.filter((request) => request.method === "POST")
-				.map((request) => request.body),
-		).toEqual([
-			{ id: link?.sessionId, location: { directory: "/demo/project" } },
-		]);
-		expect(
-			fixture.requests.some((request) =>
-				request.url.pathname.endsWith("/prompt"),
-			),
-		).toBe(false);
-		expect(
-			replacement.getBranch().some((entry) => entry.type === "message"),
-		).toBe(false);
+			sessionLink(runner.createContext().sessionManager.getBranch()),
+		).toBeUndefined();
 	});
 
 	test("two clients share prompts, streamed answers, and tool progress without starting local agents", async () => {

@@ -37,19 +37,23 @@
 		"@earendil-works/pi-tui": "*"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "2.4.16",
 		"@earendil-works/pi-coding-agent": "0.85.1",
 		"@earendil-works/pi-tui": "0.85.1",
 		"@types/bun": "1.4.0",
-		"typescript": "5.9.3",
-		"@biomejs/biome": "2.4.16",
+		"@types/ws": "^8.18.1",
 		"eslint": "9.39.4",
+		"typescript": "5.9.3",
 		"typescript-eslint": "8.60.0"
 	},
 	"dependencies": {
 		"@opencode/protocol": "2.0.12",
 		"@opencode/schema": "2.0.12",
+		"ajv": "8.20.0",
+		"diff": "^9.0.0",
 		"effect": "4.0.0-rc.112",
-		"ajv": "8.20.0"
+		"ws": "^8.22.0",
+		"zod": "^4.6.5"
 	},
 	"license": "UNLICENSED",
 	"repository": {

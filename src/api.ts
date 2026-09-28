@@ -245,6 +245,30 @@ export class SessionClient {
 		return new URL(`${API_PREFIX}${path}`, this.origin);
 	}
 
+	/** Native APIs use the same credential and refresh owner as OpenCode. */
+	nativeJson(
+		path: string,
+		method = "GET",
+		signal?: AbortSignal,
+		body?: unknown,
+	): Promise<unknown> {
+		if (!path.startsWith("/api/")) throw new Error("Invalid Leverage API path");
+		return this.json(new URL(path, this.origin), method, signal, body);
+	}
+
+	authorization(): string {
+		return `Bearer ${this.token}`;
+	}
+
+	async refreshCredential(
+		previous: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (!this.refreshToken)
+			throw new Error("Sign in with leverage login again.");
+		await this.renewToken(previous.replace(/^Bearer /, ""), signal);
+	}
+
 	async list(
 		options: Paging & { search?: string; directory?: string } = {},
 	): Promise<Page<SessionInfo>> {
@@ -604,7 +628,7 @@ export class SessionClient {
 	}
 
 	async json(
-		path: string,
+		path: string | URL,
 		method: string,
 		signal?: AbortSignal,
 		body?: unknown,
@@ -653,15 +677,18 @@ export class SessionClient {
 	}
 
 	private async request(
-		path: string,
+		path: string | URL,
 		method: string,
 		signal: AbortSignal,
 		body?: unknown,
 	): Promise<Response> {
 		const abort = AbortSignal.any([signal, this.lifetime.signal]);
+		const url = typeof path === "string" ? this.url(path) : path;
+		if (url.origin !== this.origin)
+			throw new Error("Invalid Leverage request origin");
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const token = this.token;
-			const response = await fetch(this.url(path), {
+			const response = await fetch(url, {
 				method,
 				signal: abort,
 				redirect: "error",
@@ -684,7 +711,7 @@ export class SessionClient {
 				continue;
 			}
 			if (!response.ok) {
-				throw await requestError(response, method, this.url(path));
+				throw await requestError(response, method, url);
 			}
 			return response;
 		}

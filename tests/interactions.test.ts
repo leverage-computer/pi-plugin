@@ -47,6 +47,7 @@ afterEach(async () => {
 function fixture(
 	ui: Partial<ExtensionUIContext> = {},
 	extra?: (request: Request) => Response | Promise<Response>,
+	canWrite?: () => boolean,
 ) {
 	const state = {
 		permissions: [permission],
@@ -101,6 +102,7 @@ function fixture(
 		ctx,
 		"ses_shared",
 		controller.signal,
+		canWrite,
 	);
 	disposals.push(async () => {
 		controller.abort();
@@ -120,6 +122,51 @@ function replied(): SessionEvent {
 }
 
 describe("Leverage shared interactions", () => {
+	test("viewers can inspect tool arguments but cannot decide approvals", async () => {
+		const { pending, state } = fixture(
+			{
+				select: async (title, options) => {
+					expect(title).toContain("Read-only");
+					expect(title).toContain('"branch": "feature"');
+					expect(options).toEqual(["Back"]);
+					return "Back";
+				},
+			},
+			undefined,
+			() => false,
+		);
+		await pending.show("approvals");
+		expect(state.writes).toEqual([]);
+	});
+
+	test("role downgrade closes an open approval without sending a decision", async () => {
+		let writable = true;
+		let opened!: () => void;
+		const ready = new Promise<void>((r) => {
+			opened = r;
+		});
+		const { pending, state } = fixture(
+			{
+				select: async (_title, _options, opts) => {
+					opened();
+					return new Promise<string | undefined>((r) =>
+						opts!.signal!.addEventListener("abort", () => r("Approve once"), {
+							once: true,
+						}),
+					);
+				},
+			},
+			undefined,
+			() => writable,
+		);
+		const showing = pending.show("approvals");
+		await ready;
+		writable = false;
+		pending.permissionsChanged();
+		await showing;
+		expect(state.writes).toEqual([]);
+	});
+
 	test("leaves approvals pending on escape and sends only the explicit decision", async () => {
 		let action: string | undefined;
 		const { pending, state } = fixture({

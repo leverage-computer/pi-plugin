@@ -14,7 +14,10 @@ import {
 	SessionClient,
 	type SessionInfo,
 } from "./api";
+import { changesDrawer, reviewChanges } from "./changes";
+import { type ChannelConversation, channelsDrawer } from "./channels-ui";
 import { resolveConnection } from "./config";
+import { chooseDrawer, drawerContext, textDrawer } from "./drawers";
 import {
 	createHistoryComponent,
 	HISTORY_ENTRY,
@@ -25,13 +28,20 @@ import { PendingInteractions } from "./interactions";
 import { createRemoteBashOperations, RemoteWorkspace } from "./remote";
 import {
 	LINK_ENTRY,
-	newRemoteSession,
-	pickRemoteSession,
 	type SessionLink,
 	sameSession,
 	sessionLink,
 	viewRemoteHistory,
 } from "./session-ui";
+import { WorkspaceClient } from "./workspace-api";
+import type { SessionDraft } from "./workspace-schema";
+import { SharedSession } from "./workspace-state";
+import {
+	draftSummary,
+	editDraft,
+	sessionsDrawer,
+	shareSession,
+} from "./workspace-ui";
 
 type Prompt = {
 	id: string;
@@ -40,11 +50,42 @@ type Prompt = {
 	delivery: "steer" | "queue";
 };
 
+// Pi creates a new extension instance when it switches sessions.
+const composerDrafts = new Map<string, string>();
+const workspaceConversations = new Map<
+	string,
+	Map<string, ChannelConversation>
+>();
+let nextDraft: Partial<SessionDraft> | undefined;
+
 export default function leverage(pi: ExtensionAPI): void {
+	// Pi needs a model entry to open its composer without a local provider login.
+	pi.registerProvider("leverage", {
+		name: "Leverage",
+		baseUrl: "https://leverage.invalid",
+		apiKey: "remote-session",
+		api: "openai-completions",
+		models: [
+			{
+				id: "session",
+				name: "Leverage session",
+				reasoning: false,
+				input: ["text", "image"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200000,
+				maxTokens: 64000,
+			},
+		],
+		streamSimple: () => {
+			throw new Error(
+				"Use the Leverage composer to send prompts to the remote session.",
+			);
+		},
+	});
 	for (const [name, description] of Object.entries({
 		host: "Leverage server origin",
 		workspace: "Leverage workspace slug",
-		session: "Leverage session to open; otherwise show the session picker",
+		session: "Leverage session to open; otherwise open a new draft",
 		directory:
 			"Workspace or channel folder for the session picker and new sessions",
 		cwd: "Remote working directory for manual shell commands",
@@ -52,6 +93,20 @@ export default function leverage(pi: ExtensionAPI): void {
 		pi.registerFlag(`leverage-${name}`, { type: "string", description });
 
 	let api: SessionClient | undefined;
+	let workspace: WorkspaceClient | undefined;
+	let shared: SharedSession | undefined;
+	let draft: SessionDraft | undefined;
+	let draftLoading: Promise<void> | undefined;
+	let draftError: string | undefined;
+	let creating = false;
+	let pendingCreation: Prompt | undefined;
+	let changeSummary = "Changes: checking";
+	let attachment: AbortController | undefined;
+	let conversations = new Map<string, ChannelConversation>();
+	let composerKey: string | undefined;
+	let editorInstalled = false;
+	let redrawConversation = () => {};
+	let priorEditor: ReturnType<ExtensionContext["ui"]["getEditorComponent"]>;
 	let connection: LeverageConnection | undefined;
 	let selected: SessionInfo | undefined;
 	let history: SharedHistory | undefined;
@@ -83,7 +138,9 @@ export default function leverage(pi: ExtensionAPI): void {
 			stripVTControlCharacters(
 				selected
 					? `${selected.title || selected.id} · ${streamState}`
-					: "Leverage: disconnected",
+					: draft
+						? "Leverage: new session"
+						: "Leverage: connecting",
 			),
 		);
 		ctx.ui.setWidget(
@@ -98,8 +155,44 @@ export default function leverage(pi: ExtensionAPI): void {
 									"Send not confirmed. /leverage retry sends the same message ID.",
 								]
 							: []),
+						...(shared
+							? [
+									stripVTControlCharacters(
+										`${shared.canWrite ? (shared.session?.ownerId === shared.userId ? "Owner" : "Collaborator") : "Read-only"} · ${shared.session?.visibility ?? "Checking access"} · ${interactions?.approvalCount ?? 0} approvals · ${changeSummary}`,
+									),
+									stripVTControlCharacters(
+										[...shared.viewers.values()]
+											.map(
+												(one) =>
+													`${one.userName}${one.state === "idle" ? " (idle)" : ""}`,
+											)
+											.join(" · "),
+									),
+									...([...shared.typing].some(([id]) => id !== shared?.userId)
+										? [
+												stripVTControlCharacters(
+													[...shared.typing]
+														.filter(([id]) => id !== shared?.userId)
+														.map(([, name]) => name)
+														.join(", ") + " typing…",
+												),
+											]
+										: []),
+								]
+							: []),
 					]
-				: undefined,
+				: [
+						"New Leverage session",
+						draft
+							? stripVTControlCharacters(draftSummary(draft))
+							: (draftError ?? "Loading Leverage defaults…"),
+						...(pendingCreation
+							? [
+									"Setup not confirmed. /leverage retry continues the same session.",
+								]
+							: []),
+						"F2 Settings · F3 Channels · F6 Sessions",
+					],
 		);
 	};
 	const report = (ctx: ExtensionContext, error: unknown) => {
@@ -111,7 +204,7 @@ export default function leverage(pi: ExtensionAPI): void {
 		);
 	};
 	const display = (changes: HistoryEntry[], ctx: ExtensionContext) => {
-		for (const entry of changes) {
+		for (const entry of [...changes].sort((a, b) => a.created - b.created)) {
 			if (displayed.has(entry.id)) continue;
 			displayed.add(entry.id);
 			pi.appendEntry(HISTORY_ENTRY, {
@@ -126,6 +219,18 @@ export default function leverage(pi: ExtensionAPI): void {
 		interactions?.close();
 		interactions = undefined;
 		lifetime.abort();
+		attachment?.abort();
+		attachment = undefined;
+		shared?.close();
+		shared = undefined;
+		workspace?.close();
+		workspace = undefined;
+		draft = undefined;
+		draftLoading = undefined;
+		draftError = undefined;
+		creating = false;
+		pendingCreation = undefined;
+		changeSummary = "Changes: checking";
 		terminal?.close();
 		api?.close();
 		terminal = undefined;
@@ -154,12 +259,20 @@ export default function leverage(pi: ExtensionAPI): void {
 			directory: flag("directory"),
 		});
 	const ensureApi = () => {
+		if (lifetime.signal.aborted) disconnect();
 		if (!api) {
 			connection = settings();
 			lifetime = new AbortController();
 			api = new SessionClient(connection);
+			workspace = new WorkspaceClient(api, connection);
 		}
 		return api;
+	};
+	const writable = () => {
+		if (shared && (!shared.canWrite || shared.revoked))
+			throw new Error(
+				"This session is read-only. Ask the owner for collaborator access.",
+			);
 	};
 	const linkFor = (session: SessionInfo): SessionLink => ({
 		version: 1,
@@ -181,7 +294,9 @@ export default function leverage(pi: ExtensionAPI): void {
 		const projection = history;
 		if (!client || !projection) return Promise.resolve();
 		const opening = generation;
-		const signal = lifetime.signal;
+		const signal = attachment
+			? AbortSignal.any([lifetime.signal, attachment.signal])
+			: lifetime.signal;
 		refresh = (async () => {
 			do {
 				refreshRequested = false;
@@ -197,7 +312,7 @@ export default function leverage(pi: ExtensionAPI): void {
 					client.inbox(projection.sessionId, signal),
 					interactions?.refresh(),
 				]);
-				if (opening !== generation) return;
+				if (opening !== generation || signal.aborted) return;
 				display(projection.merge(page.data, load), ctx);
 				display(projection.inbox(inbox), ctx);
 				if (activity === activityVersion)
@@ -205,11 +320,12 @@ export default function leverage(pi: ExtensionAPI): void {
 				status(ctx);
 			} while (refreshRequested);
 		})().finally(() => {
-			if (opening === generation) refresh = undefined;
+			if (opening === generation && !signal.aborted) refresh = undefined;
 		});
 		return refresh;
 	};
 	const stop = async (ctx: ExtensionContext) => {
+		writable();
 		if (stopping) return;
 		const { client, session, signal } = requireSession();
 		stopping = true;
@@ -224,9 +340,54 @@ export default function leverage(pi: ExtensionAPI): void {
 	const attach = async (session: SessionInfo, ctx: ExtensionContext) => {
 		const client = ensureApi();
 		const opening = generation;
-		const signal = lifetime.signal;
+		attachment?.abort();
+		refresh = undefined;
+		refreshRequested = false;
+		interactions?.close();
+		terminal?.close();
+		terminal = undefined;
+		attachment = new AbortController();
+		const signal = AbortSignal.any([lifetime.signal, attachment.signal]);
+		ready = false;
 		selected = session;
+		composerKey = `${connection!.host}/${connection!.workspace}/${session.id}`;
 		history = new SharedHistory(session.id);
+		shared?.close();
+		shared = new SharedSession(
+			workspace!,
+			session.id,
+			() => {
+				if (opening !== generation || signal.aborted || !shared) return;
+				display(
+					history?.attribute(
+						shared.messages.values(),
+						shared.members,
+						shared.userId,
+					) ?? [],
+					ctx,
+				);
+				if (shared.session)
+					model = `${shared.session.model ?? shared.session.providerFamily}${shared.session.reasoningEffort ? ` · ${shared.session.reasoningEffort}` : ""}`;
+				interactions?.permissionsChanged();
+				status(ctx);
+			},
+			(error) => {
+				if (opening === generation && !signal.aborted) report(ctx, error);
+			},
+			() => {
+				if (opening !== generation) return;
+				ready = false;
+				history = undefined;
+				interactions?.close();
+				lifetime.abort();
+				failure =
+					"Session access was removed. Use /leverage sessions to open another session.";
+				ctx.ui.notify(failure, "warning");
+				status(ctx);
+			},
+		);
+		await shared.start(signal);
+		if (opening !== generation || signal.aborted) return;
 		let streamFailed = false;
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== HISTORY_ENTRY)
@@ -237,19 +398,28 @@ export default function leverage(pi: ExtensionAPI): void {
 			if (marker?.sessionId === session.id && typeof marker.id === "string")
 				displayed.add(marker.id);
 		}
-		interactions = new PendingInteractions(client, ctx, session.id, signal);
+		interactions = new PendingInteractions(
+			client,
+			ctx.mode === "tui" ? drawerContext(ctx) : ctx,
+			session.id,
+			signal,
+			() => !!shared?.canWrite && !shared.revoked,
+		);
 		if (!sessionLink(ctx.sessionManager.getBranch()))
 			pi.appendEntry(LINK_ENTRY, linkFor(session));
 		pi.setSessionName(session.title || "Leverage session");
 		streamState = "connecting";
 		status(ctx);
 		const completeAttach = () => {
-			if (opening !== generation || streamFailed || ready) return;
+			if (opening !== generation || signal.aborted || streamFailed || ready)
+				return;
 			ready = true;
 			failure = "Choose a Leverage session with /leverage.";
 			void client.markRead(session.id, signal).catch(() => {});
 			status(ctx);
+			redrawConversation();
 		};
+		let refreshFileStatus = () => {};
 		const initialSync = sync(ctx);
 		const repair = () => {
 			const pending = sync(ctx);
@@ -262,13 +432,13 @@ export default function leverage(pi: ExtensionAPI): void {
 			.events({
 				signal,
 				onConnection(state) {
-					if (opening !== generation) return;
+					if (opening !== generation || signal.aborted) return;
 					streamState = state === "connected" ? "live" : "reconnecting";
 					status(ctx);
 					if (state === "connected") repair();
 				},
 				onEvent(event) {
-					if (opening !== generation || !history) return;
+					if (opening !== generation || signal.aborted || !history) return;
 					interactions?.apply(event);
 					if (
 						!("sessionID" in event.data) ||
@@ -306,13 +476,15 @@ export default function leverage(pi: ExtensionAPI): void {
 							"session.inbox.delivered",
 							"session.inbox.cancelled",
 						].includes(event.type)
-					)
+					) {
 						repair();
+						refreshFileStatus();
+					}
 					status(ctx);
 				},
 			})
 			.catch((error: unknown) => {
-				if (opening !== generation) return;
+				if (opening !== generation || signal.aborted) return;
 				streamFailed = true;
 				ready = false;
 				interactions?.close();
@@ -324,6 +496,33 @@ export default function leverage(pi: ExtensionAPI): void {
 			});
 		await initialSync;
 		completeAttach();
+		let refreshingChanges = false;
+		const refreshChanges = () => {
+			if (refreshingChanges || signal.aborted) return;
+			refreshingChanges = true;
+			void reviewChanges(workspace!, session.id, signal)
+				.then((review) => {
+					if (opening === generation) {
+						changeSummary = `${review.files.length} changed files${review.note ? " · status incomplete" : ""}`;
+						status(ctx);
+					}
+				})
+				.catch(() => {
+					if (opening === generation) {
+						changeSummary = "Changes: unavailable";
+						status(ctx);
+					}
+				})
+				.finally(() => {
+					refreshingChanges = false;
+				});
+		};
+		refreshFileStatus = refreshChanges;
+		refreshChanges();
+		const timer = setInterval(refreshChanges, 15_000);
+		signal.addEventListener("abort", () => clearInterval(timer), {
+			once: true,
+		});
 	};
 	const switchTo = async (
 		session: SessionInfo,
@@ -350,6 +549,8 @@ export default function leverage(pi: ExtensionAPI): void {
 			);
 	};
 	const send = async (prompt: Prompt, ctx: ExtensionContext) => {
+		writable();
+		shared?.touch(false);
 		const { client, session, signal } = requireSession();
 		if (sending) throw new Error("Wait for the current message to be sent.");
 		const opening = generation;
@@ -381,17 +582,53 @@ export default function leverage(pi: ExtensionAPI): void {
 			name: `image-${index + 1}.${image.mimeType.split("/")[1] || "png"}`,
 			uri: `data:${image.mimeType};base64,${image.data}`,
 		}));
-		await send(
-			{
-				id: `msg_${randomUUID()}`,
-				text: event.text,
-				...(files?.length ? { files } : {}),
-				delivery,
-			},
-			ctx,
-		);
+		const prompt: Prompt = {
+			id: `msg_${randomUUID()}`,
+			text: event.text,
+			...(files?.length ? { files } : {}),
+			delivery,
+		};
+		if (!selected) {
+			await createAndSend(prompt, ctx);
+			return;
+		}
+		await send(prompt, ctx);
+	};
+	const createAndSend = async (prompt: Prompt, ctx: ExtensionContext) => {
+		if (creating) throw new Error("Session setup is already in progress.");
+		await draftLoading;
+		if (creating) throw new Error("Session setup is already in progress.");
+		if (!draft || !workspace || !api)
+			throw new Error(
+				"Leverage defaults are unavailable. Use /leverage new to retry.",
+			);
+		if (pendingCreation && pendingCreation.id !== prompt.id)
+			throw new Error(
+				"The previous setup is unconfirmed. Use /leverage retry first.",
+			);
+		const opening = generation;
+		creating = true;
+		pendingCreation = prompt;
+		status(ctx);
+		try {
+			const id = await workspace.create(draft, lifetime.signal);
+			const session = await api.get(`ses_${id}`, lifetime.signal);
+			if (opening !== generation) return;
+			if (!ready || selected?.id !== session.id) await attach(session, ctx);
+			await send(prompt, ctx);
+			if (opening === generation) {
+				draft = undefined;
+				pendingCreation = undefined;
+			}
+		} finally {
+			if (opening === generation) {
+				creating = false;
+				status(ctx);
+			}
+		}
 	};
 	const compact = async (ctx: ExtensionContext) => {
+		writable();
 		const { client, session, signal } = requireSession();
 		await client.compact(session.id, `msg_${randomUUID()}`, signal);
 		ctx.ui.notify("Compaction requested for the shared session.", "info");
@@ -421,13 +658,30 @@ export default function leverage(pi: ExtensionAPI): void {
 		// Pi continues to its local model if an input handler throws.
 		return { action: "handled" };
 	});
+	pi.on("session_before_switch", (_event, ctx) => {
+		if (creating) {
+			ctx.ui.notify("Wait for session setup to finish.", "info");
+			return { cancel: true };
+		}
+		if (composerKey) composerDrafts.set(composerKey, ctx.ui.getEditorText());
+	});
 	pi.on("session_start", async (event, ctx) => {
 		disconnect();
 		lifetime = new AbortController();
 		const opening = generation;
+		composerKey = undefined;
 		pi.setActiveTools([]);
-		const previousEditor = ctx.ui.getEditorComponent();
+		const previousEditor = editorInstalled
+			? priorEditor
+			: ctx.ui.getEditorComponent();
+		priorEditor = previousEditor;
+		editorInstalled = true;
 		ctx.ui.setEditorComponent((tui, theme, keys) => {
+			redrawConversation = () => {
+				// Reset the old viewport before a different conversation fills the terminal.
+				tui.terminal.write("\u001b[2J\u001b[H\u001b[3J");
+				tui.requestRender(true);
+			};
 			const editor =
 				previousEditor?.(tui, theme, keys) ??
 				new CustomEditor(tui, theme, keys);
@@ -441,6 +695,9 @@ export default function leverage(pi: ExtensionAPI): void {
 				["app.session.resume", "sessions"],
 			] as const;
 			editor.handleInput = (data) => {
+				shared?.touch(
+					editor.getText().length > 0 && !data.startsWith("\u001b"),
+				);
 				const completing =
 					"isShowingAutocomplete" in editor &&
 					typeof editor.isShowingAutocomplete === "function" &&
@@ -488,7 +745,7 @@ export default function leverage(pi: ExtensionAPI): void {
 				new Text(
 					theme.fg(
 						"accent",
-						"Leverage · /leverage sessions · /leverage new · /leverage model",
+						"Leverage · /leverage new · /leverage sessions · F2 Settings · F3 Channels · F4 Changes · F5 Approvals",
 					),
 					1,
 					1,
@@ -511,6 +768,12 @@ export default function leverage(pi: ExtensionAPI): void {
 		try {
 			const link = sessionLink(ctx.sessionManager.getBranch());
 			connection = settings(link);
+			const workspaceKey = `${connection.host}/${connection.workspace}`;
+			conversations = workspaceConversations.get(workspaceKey) ?? new Map();
+			workspaceConversations.set(workspaceKey, conversations);
+			composerKey = `${connection.host}/${connection.workspace}/${link?.sessionId ?? (event.reason !== "new" ? connection.sessionId : undefined) ?? ctx.sessionManager.getSessionId()}`;
+			const savedComposer = composerDrafts.get(composerKey);
+			ctx.ui.setEditorText(savedComposer ?? "");
 			if (
 				link &&
 				(link.host !== connection.host ||
@@ -520,6 +783,7 @@ export default function leverage(pi: ExtensionAPI): void {
 					"This view belongs to another workspace. Use /leverage to choose a session.",
 				);
 			api = new SessionClient(connection);
+			workspace = new WorkspaceClient(api, connection);
 			if (link || (connection.sessionId && event.reason !== "new")) {
 				const session = await api.get(
 					link?.sessionId ?? connection.sessionId!,
@@ -540,22 +804,49 @@ export default function leverage(pi: ExtensionAPI): void {
 						});
 					else await attach(session, ctx);
 				}
-			} else if (ctx.hasUI) {
-				dialogCount++;
-				try {
-					const session = await pickRemoteSession(api, ctx, {
-						workspace: connection.workspace,
-						directory: connection.directory,
-						signal: lifetime.signal,
+			} else {
+				const nativeSocket = await workspace.socket(lifetime.signal);
+				const unstate = nativeSocket.onState((state) => {
+					if (opening === generation) {
+						streamState = state;
+						status(ctx);
+					}
+				});
+				lifetime.signal.addEventListener("abort", unstate, { once: true });
+				void nativeSocket.connect().catch((error) => {
+					if (opening === generation) report(ctx, error);
+				});
+				const overrides = nextDraft;
+				nextDraft = undefined;
+				draftLoading = workspace
+					.draft(lifetime.signal)
+					.then(async (loaded) => {
+						if (opening !== generation) return;
+						draft = { ...loaded, ...overrides };
+						if (!overrides?.context && connection?.directory) {
+							const channels = await workspace!.channels(lifetime.signal);
+							const channel = channels.find(
+								(one) =>
+									connection!.directory ===
+									`/${connection!.workspace}/${one.name}`,
+							);
+							if (channel && opening === generation && draft)
+								draft.context = { type: "channel", channelId: channel.id };
+						}
+						if (opening === generation) status(ctx);
+					})
+					.catch((error: unknown) => {
+						if (opening === generation && !lifetime.signal.aborted) {
+							failure =
+								error instanceof Error
+									? error.message
+									: "Cannot load workspace defaults";
+							draftError = failure;
+							status(ctx);
+							report(ctx, error);
+						}
 					});
-					if (session && opening === generation)
-						pi.sendUserMessage(`/leverage open ${session.id}`, {
-							expandPromptTemplates: true,
-						});
-				} finally {
-					dialogCount--;
-				}
-			} else ctx.ui.notify(failure, "info");
+			}
 		} catch (error) {
 			if (opening !== generation) return;
 			failure =
@@ -582,6 +873,7 @@ export default function leverage(pi: ExtensionAPI): void {
 	});
 	pi.on("user_bash", () => {
 		const operations = createRemoteBashOperations(() => {
+			writable();
 			const { client, session } = requireSession();
 			terminal ??= new RemoteWorkspace(
 				{ ...connection!, sessionId: session.id },
@@ -605,7 +897,7 @@ export default function leverage(pi: ExtensionAPI): void {
 	});
 	pi.registerCommand("leverage", {
 		description:
-			"Sessions, new, open, history, stop, queue, approvals, questions, inbox, model, compact, rename, archive",
+			"New, sessions, channels, settings, share, changes, approvals, history, stop, queue, model",
 		handler: async (args, ctx) => {
 			const opening = generation;
 			dialogCount++;
@@ -620,6 +912,10 @@ export default function leverage(pi: ExtensionAPI): void {
 					return;
 				}
 				if (action === "retry") {
+					if (pendingCreation && draft) {
+						await createAndSend(pendingCreation, ctx);
+						return;
+					}
 					if (!failedPrompt)
 						throw new Error("There is no unconfirmed message to retry.");
 					await send(failedPrompt, ctx);
@@ -645,6 +941,113 @@ export default function leverage(pi: ExtensionAPI): void {
 					);
 					return;
 				}
+				const client = ensureApi();
+				if (action === "new") {
+					nextDraft = { ...(text ? { title: text } : {}) };
+					const result = await ctx.newSession();
+					if (result.cancelled) nextDraft = undefined;
+					return;
+				}
+				if (action === "settings" || (action === "model" && !selected)) {
+					if (!selected) {
+						await draftLoading;
+						if (!draft) throw new Error(failure);
+						await editDraft(
+							workspace!,
+							ctx,
+							draft,
+							lifetime.signal,
+							() => status(ctx),
+							action === "model" ? "model" : undefined,
+						);
+					} else {
+						const picked = await chooseDrawer(
+							ctx,
+							"Session settings",
+							[
+								{ value: "model", label: "Model and reasoning", detail: model },
+								{ value: "share", label: "Sharing and collaborators" },
+								{ value: "info", label: "Session details" },
+							],
+							lifetime.signal,
+						);
+						if (picked === "model") await interactions!.show("model");
+						if (picked === "share" && shared?.session)
+							await shareSession(
+								workspace!,
+								ctx,
+								shared.session,
+								lifetime.signal,
+							);
+						if (picked === "info")
+							await textDrawer(
+								ctx,
+								"Session settings",
+								() =>
+									`${selected?.title ?? "Session"}\n${model}\n${shared?.session?.mode ?? ""} · ${shared?.session?.visibility ?? ""}\nAdvanced model settings inherit Leverage defaults.`,
+								lifetime.signal,
+							);
+					}
+					return;
+				}
+				if (action === "share") {
+					if (!selected) {
+						await draftLoading;
+						if (draft)
+							await editDraft(
+								workspace!,
+								ctx,
+								draft,
+								lifetime.signal,
+								() => status(ctx),
+								"visibility",
+							);
+					} else if (shared?.session) {
+						await shareSession(
+							workspace!,
+							ctx,
+							shared.session,
+							lifetime.signal,
+						);
+						await shared.refresh();
+					}
+					return;
+				}
+				if (action === "changes") {
+					const { session, signal } = requireSession();
+					await changesDrawer(
+						workspace!,
+						ctx,
+						session.id,
+						signal,
+						(count, note) => {
+							changeSummary = `${count} changed files${note ? " · status incomplete" : ""}`;
+							status(ctx);
+						},
+					);
+					return;
+				}
+				if (action === "channels") {
+					const destination = await channelsDrawer(
+						workspace!,
+						ctx,
+						lifetime.signal,
+						conversations,
+					);
+					if (destination && "sessionId" in destination)
+						await switchTo(
+							await client.get(`ses_${destination.sessionId}`, lifetime.signal),
+							ctx,
+						);
+					else if (destination && "newInChannel" in destination) {
+						nextDraft = {
+							context: { type: "channel", channelId: destination.newInChannel },
+						};
+						const result = await ctx.newSession();
+						if (result.cancelled) nextDraft = undefined;
+					}
+					return;
+				}
 				if (
 					action === "approvals" ||
 					action === "questions" ||
@@ -655,10 +1058,13 @@ export default function leverage(pi: ExtensionAPI): void {
 					await interactions!.show(action);
 					return;
 				}
-				const client = ensureApi();
 				if (action === "history") {
 					const { session, signal } = requireSession();
-					await viewRemoteHistory(client, ctx, session, signal);
+					await viewRemoteHistory(client, ctx, session, signal, {
+						messages: (await workspace!.bootstrap(session.id, signal)).messages,
+						members: shared?.members ?? [],
+						viewerId: shared?.userId,
+					});
 					return;
 				}
 				if (
@@ -666,6 +1072,7 @@ export default function leverage(pi: ExtensionAPI): void {
 					action === "archive" ||
 					action === "restore"
 				) {
+					writable();
 					const { session, signal } = requireSession();
 					if (action === "rename") {
 						if (!text) throw new Error("Use /leverage rename <title>.");
@@ -692,26 +1099,25 @@ export default function leverage(pi: ExtensionAPI): void {
 					status(ctx);
 					return;
 				}
-				const options = {
-					workspace: connection!.workspace,
-					directory: connection!.directory,
-					signal: lifetime.signal,
-				};
 				let session: SessionInfo | undefined;
-				if (action === "new")
-					session = await newRemoteSession(client, ctx, {
-						...options,
-						title: text,
-					});
-				else if (action === "open") {
+				if (action === "open") {
 					if (!words[0]) throw new Error("Use /leverage open <session-id>.");
 					session = await client.get(words[0], lifetime.signal);
-				} else if (action === "sessions")
-					session = await pickRemoteSession(client, ctx, {
-						...options,
-						search: text,
-					});
-				else
+				} else if (action === "sessions") {
+					const picked = await sessionsDrawer(
+						workspace!,
+						ctx,
+						lifetime.signal,
+						undefined,
+						text,
+					);
+					if (picked === "new") {
+						await ctx.newSession();
+						return;
+					}
+					if (picked)
+						session = await client.get(`ses_${picked}`, lifetime.signal);
+				} else
 					throw new Error(
 						"Use /leverage sessions, new, open, history, stop, queue, approvals, questions, inbox, model, compact, rename, archive, or restore.",
 					);
@@ -723,4 +1129,20 @@ export default function leverage(pi: ExtensionAPI): void {
 			}
 		},
 	});
+	for (const [key, action] of [
+		["f2", "settings"],
+		["f3", "channels"],
+		["f4", "changes"],
+		["f5", "approvals"],
+		["f6", "sessions"],
+	] as const)
+		pi.registerShortcut(key, {
+			description: `Leverage ${action}`,
+			handler: async () => {
+				if (!dialogCount && !interactions?.hasDialog)
+					pi.sendUserMessage(`/leverage ${action}`, {
+						expandPromptTemplates: true,
+					});
+			},
+		});
 }

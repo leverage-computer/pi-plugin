@@ -255,6 +255,7 @@ async function collectAnswers(
 }
 
 export class PendingInteractions {
+	private readonly resolutions = new Map<string, string>();
 	private permissions = new Map<string, PermissionRequest>();
 	private forms = new Map<string, SessionForm>();
 	private revision = 0;
@@ -262,6 +263,7 @@ export class PendingInteractions {
 	private refreshAgain = false;
 	private active?: { id?: string; controller: AbortController };
 	private closed = false;
+	private lastCanWrite: boolean;
 	private readonly abort = () => this.close();
 
 	constructor(
@@ -269,13 +271,23 @@ export class PendingInteractions {
 		private readonly ctx: ExtensionContext,
 		private readonly sessionId: string,
 		private readonly signal: AbortSignal,
+		private readonly canWrite: () => boolean = () => true,
 	) {
+		this.lastCanWrite = canWrite();
 		signal.addEventListener("abort", this.abort, { once: true });
 		if (signal.aborted) this.close();
 	}
 
 	get hasDialog(): boolean {
 		return this.active !== undefined;
+	}
+	get approvalCount(): number {
+		return this.permissions.size;
+	}
+	permissionsChanged(): void {
+		const writable = this.canWrite();
+		if (this.lastCanWrite && !writable) this.active?.controller.abort();
+		this.lastCanWrite = writable;
 	}
 
 	close(): void {
@@ -353,6 +365,12 @@ export class PendingInteractions {
 			this.permissions.set(event.data.id, event.data);
 		} else if (event.type === "permission.replied") {
 			if (!sameId(event.data.sessionID, this.sessionId)) return;
+			this.resolutions.set(
+				event.data.requestID,
+				`${this.permissions.get(event.data.requestID)?.action ?? "Tool approval"} · ${event.data.reply === "reject" ? "Denied" : "Approved"}`,
+			);
+			while (this.resolutions.size > 30)
+				this.resolutions.delete(this.resolutions.keys().next().value!);
 			this.permissions.delete(event.data.requestID);
 			this.dismiss(event.data.requestID);
 			const scopeId = `frm_scope_${event.data.requestID.replace(/^per_/, "")}`;
@@ -389,6 +407,10 @@ export class PendingInteractions {
 
 	async show(kind: Interaction): Promise<void> {
 		if (this.closed) return;
+		if (!this.canWrite() && kind !== "approvals")
+			throw new Error(
+				"This session is read-only. Ask the owner for collaborator access.",
+			);
 		if (!this.ctx.hasUI)
 			throw new Error(
 				"Open Pi interactively to answer requests and choose session settings.",
@@ -413,7 +435,14 @@ export class PendingInteractions {
 					? [...this.permissions.values()]
 					: [...this.forms.values()];
 			if (!items.length) {
-				this.ctx.ui.notify(`No ${kind} are waiting.`, "info");
+				if (kind === "approvals" && this.resolutions.size)
+					await choose(
+						this.ctx,
+						"Recent approval decisions",
+						[...this.resolutions.values(), "Back"],
+						{ signal },
+					);
+				else this.ctx.ui.notify(`No ${kind} are waiting.`, "info");
 				return;
 			}
 			const labels = items.map(
@@ -454,6 +483,15 @@ export class PendingInteractions {
 		]
 			.filter(Boolean)
 			.join("\n");
+		if (!this.canWrite()) {
+			await choose(
+				this.ctx,
+				`${detail}\nRead-only · collaborator access is required to decide`,
+				["Back"],
+				{ signal },
+			);
+			return;
+		}
 		const picked = await choose(
 			this.ctx,
 			detail,
@@ -465,7 +503,12 @@ export class PendingInteractions {
 			],
 			{ signal },
 		);
-		if (picked === undefined || picked === "Leave pending" || signal.aborted)
+		if (
+			picked === undefined ||
+			picked === "Leave pending" ||
+			signal.aborted ||
+			!this.canWrite()
+		)
 			return;
 		let reason: string | undefined;
 		if (picked === "Deny") {
@@ -509,7 +552,12 @@ export class PendingInteractions {
 			["Answer", ...(!scope ? ["Cancel question"] : []), "Leave pending"],
 			{ signal },
 		);
-		if (picked === undefined || picked === "Leave pending" || signal.aborted)
+		if (
+			picked === undefined ||
+			picked === "Leave pending" ||
+			signal.aborted ||
+			!this.canWrite()
+		)
 			return;
 		if (picked === "Cancel question") {
 			const confirmed = await confirm(

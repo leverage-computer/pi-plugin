@@ -6,6 +6,8 @@ import type {
 import { Container, matchesKey, Text } from "@earendil-works/pi-tui";
 import type { SessionClient, SessionInfo } from "./api";
 import { createHistoryComponent, SharedHistory } from "./history";
+import { nativeId } from "./workspace-api";
+import type { SessionInput, WorkspaceMember } from "./workspace-schema";
 
 export const LINK_ENTRY = "leverage-session";
 
@@ -49,6 +51,11 @@ export async function viewRemoteHistory(
 	ctx: ExtensionContext,
 	session: SessionInfo,
 	signal: AbortSignal,
+	attribution?: {
+		messages: SessionInput[];
+		members: WorkspaceMember[];
+		viewerId?: string;
+	},
 ): Promise<void> {
 	const cursors: Array<string | undefined> = [undefined];
 	let pageNumber = 0;
@@ -61,6 +68,14 @@ export async function viewRemoteHistory(
 		});
 		if (signal.aborted) return;
 		const projection = new SharedHistory(session.id);
+		if (attribution) {
+			const ids = new Set(page.data.map((one) => nativeId(one.id)));
+			projection.attribute(
+				attribution.messages.filter((one) => ids.has(one.uuid)),
+				attribution.members,
+				attribution.viewerId,
+			);
+		}
 		projection.merge(page.data);
 		const content =
 			projection

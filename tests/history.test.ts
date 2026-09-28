@@ -7,6 +7,7 @@ import {
 	isHistoryEntry,
 	SharedHistory,
 } from "../src/history";
+import { nativeId } from "../src/workspace-api";
 
 const sessionId = "ses_shared";
 let nextEvent = 0;
@@ -95,6 +96,78 @@ describe("Shared session history", () => {
 		expect(shown).not.toContain("private reasoning");
 		expect(history.entries()[1]?.role).toBe("assistant");
 		expect(history.merge([toolMessage])).toEqual([]);
+	});
+
+	test("collapses long tool output and retains the complete expanded result", () => {
+		initTheme("dark", false);
+		const history = new SharedHistory(sessionId);
+		const output = Array.from(
+			{ length: 100 },
+			(_, n) => `Result line ${n}`,
+		).join("\n");
+		history.merge([
+			{
+				...assistant(""),
+				content: [
+					{
+						type: "tool",
+						id: "call_long",
+						name: "bash",
+						state: {
+							status: "completed",
+							input: { command: "read report" },
+							content: [{ type: "text", text: output }],
+						},
+						time: { created: 2, completed: 3 },
+					},
+				],
+			},
+		]);
+		const read = () => history.entries()[0];
+		const compact = createHistoryComponent(read).render(80).join("\n");
+		expect(compact).toContain("Result line 0");
+		expect(compact).toContain("Expand tools");
+		expect(compact).not.toContain("Result line 99");
+		expect(createHistoryComponent(read, true).render(80).join("\n")).toContain(
+			"Result line 99",
+		);
+	});
+
+	test("correlates canonical author and source metadata without guessing from message text", () => {
+		initTheme("dark", false);
+		const history = new SharedHistory(sessionId);
+		history.merge([
+			user("msg_canonical", "*Impersonator*: fake attribution"),
+			user("msg_unknown", "Sent from Codex: just text"),
+		]);
+		history.attribute(
+			[
+				{
+					uuid: nativeId("msg_canonical"),
+					sessionId,
+					authorId: "bob",
+					authorName: "Old name",
+					harness: "codex",
+					content: "Canonical content",
+					status: "received",
+					createdAt: new Date().toISOString(),
+				},
+			],
+			[{ id: "bob", name: "Bob" }],
+			"alice",
+		);
+		const shown = stripVTControlCharacters(
+			createHistoryComponent(() => history.entries()[0])
+				.render(120)
+				.join("\n"),
+		);
+		expect(shown).toContain("Bob");
+		expect(shown).toContain("Sent from Codex");
+		expect(shown).toContain("received");
+		expect(shown).toContain("Canonical content");
+		expect(shown).not.toContain("Impersonator");
+		expect(shown).not.toContain("(you)");
+		expect(history.entries()[1].harness).toBeUndefined();
 	});
 
 	test("shows attachment descriptions without loading or embedding their data", () => {
