@@ -1,4 +1,8 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionContext,
+	renderDiff,
+} from "@earendil-works/pi-coding-agent";
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { createTwoFilesPatch, diffLines, parsePatch } from "diff";
 import { chooseDrawer, textDrawer } from "./drawers";
 import type { WorkspaceClient } from "./workspace-api";
@@ -31,6 +35,42 @@ export function textDiff(
 			0,
 		),
 	};
+}
+// Pi's diff renderer reads "+12 text" lines, so number each unified patch line.
+export function numberedDiff(patch: string): string {
+	let hunks: ReturnType<typeof parsePatch>[number]["hunks"];
+	try {
+		hunks = parsePatch(patch).flatMap((file) => file.hunks);
+	} catch {
+		return "";
+	}
+	const width = String(
+		Math.max(
+			1,
+			...hunks.map((hunk) =>
+				Math.max(hunk.oldStart + hunk.oldLines, hunk.newStart + hunk.newLines),
+			),
+		),
+	).length;
+	const lines: string[] = [];
+	for (const [index, hunk] of hunks.entries()) {
+		if (index) lines.push(` ${" ".repeat(width)} ...`);
+		let before = hunk.oldStart;
+		let after = hunk.newStart;
+		for (const line of hunk.lines) {
+			const text = line.slice(1);
+			if (line.startsWith("+"))
+				lines.push(`+${String(after++).padStart(width)} ${text}`);
+			else if (line.startsWith("-"))
+				lines.push(`-${String(before++).padStart(width)} ${text}`);
+			else if (line.startsWith(" ")) {
+				lines.push(` ${String(after).padStart(width)} ${text}`);
+				before++;
+				after++;
+			}
+		}
+	}
+	return lines.join("\n");
 }
 function savedFiles(sources: FileSource[]): ReviewedFile[] {
 	return sources.flatMap((source) => {
@@ -232,7 +272,7 @@ export async function changesDrawer(
 					...review.files.map((file) => ({
 						value: `${file.sourceId}:${file.path}`,
 						label: file.oldPath ? `${file.oldPath} → ${file.path}` : file.path,
-						detail: `${file.state} · ${file.additions === undefined ? "?" : `+${file.additions}`} ${file.deletions === undefined ? "?" : `−${file.deletions}`} · ${file.sourceLabel}`,
+						detail: `${file.additions === undefined ? "?" : `+${file.additions}`} ${file.deletions === undefined ? "?" : `−${file.deletions}`} · ${file.state} · ${file.sourceLabel}`,
 					})),
 					...(!review.files.length
 						? [
@@ -253,6 +293,8 @@ export async function changesDrawer(
 				await refresh();
 				continue;
 			}
+			const file = () =>
+				review.files.find((one) => `${one.sourceId}:${one.path}` === picked);
 			await textDrawer(
 				ctx,
 				picked === "status"
@@ -260,14 +302,30 @@ export async function changesDrawer(
 					: picked.split(":").slice(1).join(":"),
 				() => {
 					if (picked === "status") return error || review.note;
-					const file = review.files.find(
-						(one) => `${one.sourceId}:${one.path}` === picked,
-					);
-					return file
-						? `${file.sourceLabel} · ${file.state}\n\n${file.unavailable ?? file.patch ?? "No text diff is available for this file."}`
+					const current = file();
+					return current
+						? (current.unavailable ??
+								current.patch ??
+								"No text diff is available for this file.")
 						: "This file no longer has changes.";
 				},
 				active,
+				{
+					subtitle: () => {
+						const current = file();
+						return current
+							? `${current.sourceLabel} · ${current.state} · +${current.additions ?? "?"} −${current.deletions ?? "?"}`
+							: "";
+					},
+					format: (text, width) => {
+						const current = file();
+						const numbered =
+							current?.patch && !current.unavailable ? numberedDiff(text) : "";
+						return (numbered ? renderDiff(numbered) : text)
+							.split("\n")
+							.flatMap((line) => (line ? wrapTextWithAnsi(line, width) : [""]));
+					},
+				},
 			);
 		}
 	} finally {

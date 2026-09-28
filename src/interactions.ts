@@ -272,6 +272,7 @@ export class PendingInteractions {
 		private readonly sessionId: string,
 		private readonly signal: AbortSignal,
 		private readonly canWrite: () => boolean = () => true,
+		private readonly changed: () => void = () => {},
 	) {
 		this.lastCanWrite = canWrite();
 		signal.addEventListener("abort", this.abort, { once: true });
@@ -284,6 +285,9 @@ export class PendingInteractions {
 	get approvalCount(): number {
 		return this.permissions.size;
 	}
+	get questionCount(): number {
+		return this.forms.size;
+	}
 	permissionsChanged(): void {
 		const writable = this.canWrite();
 		if (this.lastCanWrite && !writable) this.active?.controller.abort();
@@ -295,7 +299,8 @@ export class PendingInteractions {
 		this.closed = true;
 		this.active?.controller.abort();
 		this.signal.removeEventListener("abort", this.abort);
-		this.ctx.ui.setWidget("leverage-pending", undefined);
+		this.permissions.clear();
+		this.forms.clear();
 	}
 
 	refresh(): Promise<void> {
@@ -337,7 +342,7 @@ export class PendingInteractions {
 					!this.forms.has(this.active.id)
 				)
 					this.active.controller.abort();
-				this.render();
+				this.changed();
 			} while (this.refreshAgain && !this.closed);
 		})().finally(() => {
 			this.refreshing = undefined;
@@ -385,24 +390,11 @@ export class PendingInteractions {
 			this.dismiss(event.data.id);
 		} else return;
 		this.revision++;
-		this.render();
+		this.changed();
 	}
 
 	private dismiss(id: string): void {
 		if (this.active?.id === id) this.active.controller.abort();
-	}
-
-	private render(): void {
-		const lines: string[] = [];
-		if (this.permissions.size)
-			lines.push(
-				`${this.permissions.size} approval${this.permissions.size === 1 ? "" : "s"} waiting · /leverage approvals`,
-			);
-		if (this.forms.size)
-			lines.push(
-				`${this.forms.size} question${this.forms.size === 1 ? "" : "s"} waiting · /leverage questions`,
-			);
-		this.ctx.ui.setWidget("leverage-pending", lines.length ? lines : undefined);
 	}
 
 	async show(kind: Interaction): Promise<void> {
@@ -478,7 +470,7 @@ export class PendingInteractions {
 		signal: AbortSignal,
 	): Promise<void> {
 		const detail = [
-			request.action,
+			`Allow ${request.action}?`,
 			request.message,
 			...request.resources,
 			request.metadata && JSON.stringify(request.metadata, null, 2),

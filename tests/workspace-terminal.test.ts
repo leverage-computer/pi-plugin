@@ -61,6 +61,8 @@ async function terminal(
 				...process.env,
 				TERM: "xterm-256color",
 				PI_SKIP_VERSION_CHECK: "1",
+				// Over SSH, Pi waits longer and reads Escape plus the next key as Alt.
+				PI_TUI_ESC_TIMEOUT: "10",
 				PI_CODING_AGENT_DIR: directory,
 				LEVERAGE_HOST: f.server.url.origin,
 				LEVERAGE_WORKSPACE: "test",
@@ -97,7 +99,7 @@ async function terminal(
 		child.stdin.write(text);
 		await Bun.sleep(80);
 	};
-	await wait("Build · Public to workspace", 30000);
+	await wait("Sharing Public", 30000);
 	return { f, wait, key, output: () => output };
 }
 
@@ -107,10 +109,12 @@ test("wide Pi terminal changes sharing with F3 and returns the untouched draft w
 	await ui.key("\x1bOR");
 	await ui.wait("Session visibility");
 	await ui.key("Private\r");
-	await ui.wait("Keep this draft /tmp/attachment.png");
+	await ui.wait("Sharing Private");
+	// Typing redraws the composer line, which shows the kept draft.
+	await ui.key("!");
+	await ui.wait("Keep this draft /tmp/attachment.png!");
 	expect(ui.f.state.createCount).toBe(0);
 	expect(ui.f.requests.some((r) => r.method !== "GET")).toBe(false);
-	expect(ui.output()).toContain("Private");
 }, 45000);
 
 test("narrow Pi terminal sends a channel message and thread reply, then restores the session draft", async () => {
@@ -140,7 +144,8 @@ test("narrow Pi terminal sends a channel message and thread reply, then restores
 	await ui.key("\x1b");
 	await ui.wait("Leverage channels");
 	await ui.key("\x1b");
-	await ui.wait("My session draft");
+	await ui.key("!");
+	await ui.wait("My session draft!");
 	expect(ui.f.state.createCount).toBe(0);
 }, 45000);
 
@@ -207,28 +212,28 @@ test("switching real Pi sessions restores each destination's composer draft", as
 	await ui.key(`\x1b[17~`);
 	await ui.wait("Leverage sessions");
 	await ui.key("First session\r");
-	await ui.wait("First session · Ready");
+	await ui.wait("First session  ● Ready");
 	await ui.key("First unsent draft /tmp/attachment.png");
 	await ui.key(`\x1b[17~`);
 	await ui.wait("Leverage sessions");
 	await ui.key("Second session\r");
-	await ui.wait("Second session · Ready");
+	await ui.wait("Second session  ● Ready");
 	await ui.key("Second unsent draft");
 	await ui.key(`\x1b[17~`);
 	await ui.wait("Leverage sessions");
 	await ui.key("First session\r");
-	await ui.wait("First session · Ready");
+	await ui.wait("First session  ● Ready");
 	await ui.wait("First unsent draft /tmp/attachment.png");
 	expect(
-		ui.output().slice(ui.output().lastIndexOf("First session · Ready")),
+		ui.output().slice(ui.output().lastIndexOf("First session  ● Ready")),
 	).not.toContain("Second unsent draft");
 	await ui.key(`\x1b[17~`);
 	await ui.wait("Leverage sessions");
 	await ui.key("Second session\r");
-	await ui.wait("Second session · Ready");
+	await ui.wait("Second session  ● Ready");
 	await ui.wait("Second unsent draft");
 	expect(
-		ui.output().slice(ui.output().lastIndexOf("Second session · Ready")),
+		ui.output().slice(ui.output().lastIndexOf("Second session  ● Ready")),
 	).not.toContain("First unsent draft");
 	expect(ui.f.state.createCount).toBe(0);
 	expect(

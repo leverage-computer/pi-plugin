@@ -10,15 +10,16 @@ import {
 	matchesKey,
 	Text,
 	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { chooseDrawer, clean } from "./drawers";
+import { chooseDrawer, clean, keyHints } from "./drawers";
 import type { WorkspaceClient } from "./workspace-api";
 import type {
 	Channel,
 	ChannelMessage,
 	WorkspaceMember,
 } from "./workspace-schema";
-import { sessionsDrawer } from "./workspace-ui";
+import { sessionsDrawer, visibilityName } from "./workspace-ui";
 
 export class ChannelConversation {
 	readonly messages = new Map<string, ChannelMessage>();
@@ -26,6 +27,8 @@ export class ChannelConversation {
 	before?: number | null;
 	hasOlder = false;
 	draft = "";
+	// Browse mode returns to this message after older messages load.
+	browsing?: string;
 	failed?: { id: string; text: string };
 	merge(messages: ChannelMessage[]): void {
 		this.revision++;
@@ -110,9 +113,17 @@ export async function channelScreen(
 			keys,
 		);
 		editor.setText(conversation.draft);
-		editor.focused = true;
-		let browse = false;
-		let selected = Math.max(0, conversation.entries().length - 1);
+		let browse = conversation.browsing !== undefined;
+		let selected = browse
+			? Math.max(
+					0,
+					conversation
+						.entries()
+						.findIndex((one) => one.id === conversation.browsing),
+				)
+			: Math.max(0, conversation.entries().length - 1);
+		conversation.browsing = undefined;
+		editor.focused = !browse;
 		let sending = false;
 		let error = "";
 		let refreshing = false;
@@ -267,7 +278,7 @@ export async function channelScreen(
 				const editorLines = editor.render(width);
 				const available = Math.max(
 					4,
-					(process.stdout.rows || 30) - editorLines.length - 7,
+					(process.stdout.rows || 30) - editorLines.length - 8,
 				);
 				let lines: string[] = [];
 				for (
@@ -278,61 +289,80 @@ export async function channelScreen(
 					index++
 				) {
 					const message = messages[index];
-					const name =
+					const active = browse && index === selected;
+					const name = clean(
 						members.find((one) => one.id === message.authorId)?.name ??
-						message.authorName ??
-						(message.authorId === null ? "Leverage" : "Unknown member");
-					const badge =
-						message.harness === "codex"
-							? " · Sent from Codex"
-							: message.harness === "claude"
-								? " · Sent from Claude"
-								: "";
-					lines.push(
-						"",
-						theme.fg(
-							browse && index === selected ? "accent" : "muted",
-							truncateToWidth(
-								clean(
-									`${browse && index === selected ? "› " : ""}${name} · ${new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${badge}${message.threadSummary?.replyCount ? ` · ${message.threadSummary.replyCount} replies` : ""}`,
-								),
-								width,
+							message.authorName ??
+							(message.authorId === null ? "Leverage" : "Unknown member"),
+					);
+					const replies = message.threadSummary?.replyCount ?? 0;
+					const author = truncateToWidth(
+						`${active ? theme.fg("accent", "› ") : ""}${theme.bold(
+							theme.fg(
+								message.authorId === socket.userId ? "accent" : "text",
+								name,
 							),
-						),
+						)}${theme.fg(
+							"dim",
+							`  ${new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+						)}${
+							message.harness === "codex" || message.harness === "claude"
+								? theme.fg(
+										"muted",
+										` · Sent from ${message.harness === "codex" ? "Codex" : "Claude"}`,
+									)
+								: ""
+						}${
+							replies
+								? theme.fg(
+										"accent",
+										` · ${replies === 1 ? "1 reply" : `${replies} replies`}`,
+									)
+								: ""
+						}`,
+						width,
+						"…",
+						true,
 					);
 					lines.push(
+						"",
+						active ? theme.bg("selectedBg", author) : author,
 						...new Markdown(
 							clean(message.content),
-							0,
+							active ? 2 : 0,
 							0,
 							getMarkdownTheme(),
 						).render(width),
+						...(message.attachments ?? []).map((attachment) =>
+							theme.fg("muted", clean(`▸ ${attachment.filename}`)),
+						),
 					);
-					for (const attachment of message.attachments ?? [])
-						lines.push(clean(`[${attachment.filename}]`));
 				}
 				lines = lines.slice(-available);
+				const title = `${theme.bold(theme.fg("accent", clean(`#${channel.name ?? "channel"}`)))}${threadId ? theme.fg("muted", " / Thread") : ""}`;
+				const state = theme.fg(
+					socket.status === "live" ? "success" : "warning",
+					`● ${socket.status}`,
+				);
+				const names = [...typing.values()].map(clean);
 				return [
-					theme.fg(
-						"accent",
-						truncateToWidth(
-							clean(
-								`#${channel.name ?? "channel"}${threadId ? " / Thread" : ""} · ${socket.status}`,
-							),
-							width,
-						),
+					truncateToWidth(
+						`${title}${" ".repeat(Math.max(2, width - visibleWidth(title) - visibleWidth(state)))}${state}`,
+						width,
 					),
+					theme.fg("borderMuted", "─".repeat(width)),
 					...lines,
 					"",
-					theme.fg(
-						"dim",
-						truncateToWidth(
-							clean(
-								[...typing.values()].join(", ") +
-									(typing.size ? " typing…" : ""),
-							),
-							width,
-						),
+					truncateToWidth(
+						names.length
+							? theme.italic(
+									theme.fg(
+										"muted",
+										`${names.join(", ")} ${names.length === 1 ? "is" : "are"} typing…`,
+									),
+								)
+							: "",
+						width,
 					),
 					...(error
 						? new Text(theme.fg("error", clean(error)), 0, 0)
@@ -340,23 +370,54 @@ export async function channelScreen(
 								.slice(0, 2)
 						: []),
 					...editorLines,
-					theme.fg(
-						"dim",
-						truncateToWidth(
-							`${sending ? "Sending… · " : ""}${conversation.failed ? "Unconfirmed send: Enter retries · " : ""}Tab ${browse ? "compose" : "browse messages"} · F2 sessions · F3 older · Esc back`,
-							width,
-						),
+					truncateToWidth(
+						[
+							sending ? theme.fg("muted", "Sending…") : "",
+							conversation.failed
+								? theme.fg("warning", "Unconfirmed send · Enter retries")
+								: "",
+							keyHints(
+								theme,
+								browse
+									? [
+											["↑↓", "move"],
+											...(selected === 0 && conversation.hasOlder && !threadId
+												? ([["↑", "older"]] as Array<[string, string]>)
+												: []),
+											["Enter", "open"],
+											["Tab", "compose"],
+											["Esc", "back"],
+										]
+									: [
+											["Enter", "send"],
+											["Tab", "browse"],
+											["F6", "sessions"],
+											["Esc", "back"],
+										],
+							),
+						]
+							.filter(Boolean)
+							.join("   "),
+						width,
 					),
 				];
 			},
 			handleInput(data) {
 				if (matchesKey(data, "escape")) return done({ type: "back" });
-				if (matchesKey(data, "f2")) return done({ type: "sessions" });
-				if (matchesKey(data, "f3")) return done({ type: "older" });
+				if (matchesKey(data, "f6")) return done({ type: "sessions" });
 				if (matchesKey(data, "tab")) {
 					browse = !browse;
 					editor.focused = !browse;
 				} else if (browse) {
+					if (
+						matchesKey(data, "up") &&
+						selected === 0 &&
+						conversation.hasOlder &&
+						!threadId
+					) {
+						conversation.browsing = conversation.entries()[0]?.id;
+						return done({ type: "older" });
+					}
 					if (matchesKey(data, "up")) selected = Math.max(0, selected - 1);
 					if (matchesKey(data, "down"))
 						selected = Math.min(
@@ -400,13 +461,20 @@ export async function channelsDrawer(
 			api.readStates(signal),
 			api.members(signal),
 		]);
+		const unread = (id: string) =>
+			states.find((one) => one.channelId === id)?.unreadCount ?? 0;
 		const picked = await chooseDrawer(
 			ctx,
 			"Leverage channels",
 			channels.map((channel) => ({
 				value: channel.id,
 				label: `#${channel.name ?? "channel"}`,
-				detail: `${states.find((one) => one.channelId === channel.id)?.unreadCount ?? 0} unread · ${channel.visibility ?? channel.kind ?? "channel"}`,
+				detail: [
+					unread(channel.id) ? `${unread(channel.id)} unread` : "",
+					visibilityName(channel.visibility ?? channel.kind ?? "channel"),
+				]
+					.filter(Boolean)
+					.join(" · "),
 			})),
 			signal,
 		);

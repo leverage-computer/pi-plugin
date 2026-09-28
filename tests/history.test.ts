@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionEvent, SessionMessage } from "../src/api";
 import {
 	createHistoryComponent,
@@ -11,6 +11,11 @@ import { nativeId } from "../src/workspace-api";
 
 const sessionId = "ses_shared";
 let nextEvent = 0;
+initTheme("dark", false);
+// Pi keeps its active theme on globalThis and exports no getter for it.
+const theme = (globalThis as Record<symbol, Theme>)[
+	Symbol.for("@earendil-works/pi-coding-agent:theme")
+];
 
 function event<T extends SessionEvent["type"]>(
 	type: T,
@@ -85,21 +90,20 @@ describe("Shared session history", () => {
 		expect(changed[0]?.content).toContain("Alex: Please check the project.");
 		expect(changed[1]?.content).toContain("bash · completed");
 		expect(changed[1]?.content).toContain("/work/project");
-		initTheme("dark", false);
 		const shown = stripVTControlCharacters(
-			createHistoryComponent(() => history.entries()[1])
+			createHistoryComponent(() => history.entries()[1], false, theme)
 				.render(100)
 				.join("\n"),
 		);
 		expect(shown).toContain("I checked the files.");
-		expect(shown).toContain("bash · completed");
+		expect(shown).toContain("✓ bash pwd");
+		expect(shown).toContain("/work/project");
 		expect(shown).not.toContain("private reasoning");
 		expect(history.entries()[1]?.role).toBe("assistant");
 		expect(history.merge([toolMessage])).toEqual([]);
 	});
 
 	test("collapses long tool output and retains the complete expanded result", () => {
-		initTheme("dark", false);
 		const history = new SharedHistory(sessionId);
 		const output = Array.from(
 			{ length: 100 },
@@ -124,17 +128,18 @@ describe("Shared session history", () => {
 			},
 		]);
 		const read = () => history.entries()[0];
-		const compact = createHistoryComponent(read).render(80).join("\n");
+		const compact = createHistoryComponent(read, false, theme)
+			.render(80)
+			.join("\n");
 		expect(compact).toContain("Result line 0");
-		expect(compact).toContain("Expand tools");
+		expect(compact).toContain("94 more lines");
 		expect(compact).not.toContain("Result line 99");
-		expect(createHistoryComponent(read, true).render(80).join("\n")).toContain(
-			"Result line 99",
-		);
+		expect(
+			createHistoryComponent(read, true, theme).render(80).join("\n"),
+		).toContain("Result line 99");
 	});
 
 	test("correlates canonical author and source metadata without guessing from message text", () => {
-		initTheme("dark", false);
 		const history = new SharedHistory(sessionId);
 		history.merge([
 			user("msg_canonical", "*Impersonator*: fake attribution"),
@@ -157,13 +162,13 @@ describe("Shared session history", () => {
 			"alice",
 		);
 		const shown = stripVTControlCharacters(
-			createHistoryComponent(() => history.entries()[0])
+			createHistoryComponent(() => history.entries()[0], false, theme)
 				.render(120)
 				.join("\n"),
 		);
 		expect(shown).toContain("Bob");
 		expect(shown).toContain("Sent from Codex");
-		expect(shown).toContain("received");
+		expect(shown).toContain("Delivered");
 		expect(shown).toContain("Canonical content");
 		expect(shown).not.toContain("Impersonator");
 		expect(shown).not.toContain("(you)");
@@ -419,7 +424,6 @@ describe("Shared session history", () => {
 	});
 
 	test("retains inline images through prompt echoes and renders a terminal fallback", () => {
-		initTheme("dark", false);
 		const data =
 			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6S7YAAAAASUVORK5CYII=";
 		const history = new SharedHistory(sessionId);
@@ -452,7 +456,11 @@ describe("Shared session history", () => {
 		expect(
 			history.entries()[0]?.parts.find((part) => part.type === "file"),
 		).toMatchObject({ data, mime: "image/png" });
-		const rendered = createHistoryComponent(() => history.entries()[0])
+		const rendered = createHistoryComponent(
+			() => history.entries()[0],
+			false,
+			theme,
+		)
 			.render(80)
 			.join("\n");
 		expect(rendered).toContain("diagram.png");
@@ -462,7 +470,6 @@ describe("Shared session history", () => {
 	});
 
 	test("refreshes the same rendered tool card and strips terminal control sequences", () => {
-		initTheme("dark", false);
 		const history = new SharedHistory(sessionId);
 		const ref = {
 			sessionID: sessionId,
@@ -479,15 +486,21 @@ describe("Shared session history", () => {
 				executed: true,
 			}),
 		);
-		const component = createHistoryComponent(() => history.entries()[0]);
-		expect(component.render(80).join("\n")).toContain("running");
+		const component = createHistoryComponent(
+			() => history.entries()[0],
+			false,
+			theme,
+		);
+		const text = () =>
+			stripVTControlCharacters(component.render(80).join("\n"));
+		expect(text()).toContain("● bash ls");
 		history.apply(
 			event("session.tool.progress", {
 				...ref,
 				metadata: { output: "First file" },
 			}),
 		);
-		expect(component.render(80).join("\n")).toContain("First file");
+		expect(text()).toContain("First file");
 		history.apply(
 			event("session.tool.success", {
 				...ref,
@@ -496,7 +509,7 @@ describe("Shared session history", () => {
 			}),
 		);
 		const rendered = component.render(80).join("\n");
-		expect(rendered).toContain("completed");
+		expect(text()).toContain("✓ bash ls");
 		expect(rendered).toContain("Finished");
 		expect(rendered).not.toContain("\u001b]52");
 		expect(history.entries()).toHaveLength(1);

@@ -1,10 +1,17 @@
 import { stripVTControlCharacters } from "node:util";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import {
+	getMarkdownTheme,
+	keyHint,
+	type Theme,
+	type ThemeColor,
+} from "@earendil-works/pi-coding-agent";
+import {
+	Box,
 	type Component,
 	Container,
 	Image,
 	Markdown,
+	Spacer,
 	Text,
 } from "@earendil-works/pi-tui";
 import type {
@@ -287,40 +294,74 @@ export function isHistoryEntry(value: unknown): value is HistoryEntry {
 		Number.isFinite(entry.revision)
 	);
 }
+// Server delivery states, in the words a person expects.
+const DELIVERY: Record<string, [string, ThemeColor]> = {
+	queued: ["Queued", "warning"],
+	releasing: ["Sending…", "muted"],
+	sending: ["Sending…", "muted"],
+	received: ["Delivered", "muted"],
+	rejected: ["Not delivered", "error"],
+	withdrawn: ["Withdrawn", "muted"],
+	cancelled: ["Cancelled", "muted"],
+	unknown: ["Delivery unknown", "warning"],
+};
+const SUMMARY_KEYS = [
+	"command",
+	"file_path",
+	"path",
+	"pattern",
+	"query",
+	"url",
+	"name",
+	"description",
+];
+// The argument that says what a tool call does, such as a path or command.
+function toolSummary(input: string): string {
+	try {
+		const value = JSON.parse(input) as Record<string, unknown>;
+		const found = SUMMARY_KEYS.map((key) => value[key]).find(
+			(one) => typeof one === "string" && one.trim(),
+		);
+		return typeof found === "string" ? found.trim().split("\n")[0] : "";
+	} catch {
+		return "";
+	}
+}
+// Leverage tools report failures as JSON with an error field.
+function toolError(output: string): string {
+	try {
+		const value = JSON.parse(output) as { error?: unknown };
+		return typeof value.error === "string" ? value.error : output;
+	} catch {
+		return output;
+	}
+}
+
 export function createHistoryComponent(
 	read: () => HistoryEntry | undefined,
-	expanded = false,
+	expanded: boolean,
+	theme: Theme,
 ): Component {
 	let previous: HistoryEntry | undefined;
 	let rendered: Container | undefined;
-	const toolText = (value: string): Component => {
-		const body = new Text(plain(value), 1, 0);
-		return {
-			invalidate: () => body.invalidate(),
-			render(width) {
-				const lines = body.render(width);
-				return expanded || lines.length <= 6
-					? lines
-					: [
-							...lines.slice(0, 6),
-							...new Text("… Expand tools to see all output", 1, 0).render(
-								width,
-							),
-						];
-			},
-		};
-	};
-	const files = (container: Container, attachments: HistoryFile[]) => {
+	const files = (
+		parent: { addChild(component: Component): void },
+		attachments: HistoryFile[],
+	) => {
 		for (const file of attachments) {
-			container.addChild(
-				new Text(plain(`[${file.name} · ${file.mime}]`), 0, 0),
+			parent.addChild(
+				new Text(
+					theme.fg("muted", plain(`▸ ${file.name} · ${file.mime}`)),
+					0,
+					0,
+				),
 			);
 			if (
 				file.data &&
 				/^image\/(png|jpeg|gif|webp)$/.test(file.mime) &&
 				/^[A-Za-z0-9+/]*={0,2}$/.test(file.data)
 			)
-				container.addChild(
+				parent.addChild(
 					new Image(
 						file.data,
 						file.mime,
@@ -334,6 +375,90 @@ export function createHistoryComponent(
 				);
 		}
 	};
+	const preview = (value: string, color: ThemeColor): Component => {
+		const body = new Text(theme.fg(color, plain(value)), 0, 0);
+		return {
+			invalidate: () => body.invalidate(),
+			render(width) {
+				const lines = body.render(width);
+				return expanded || lines.length <= 6
+					? lines
+					: [
+							...lines.slice(0, 6),
+							...new Text(
+								`${theme.fg("muted", `… ${lines.length - 6} more lines ·`)} ${keyHint("app.tools.expand", "to expand")}`,
+								0,
+								0,
+							).render(width),
+						];
+			},
+		};
+	};
+	const tool = (part: ToolPart): Component => {
+		const failed = part.status === "error";
+		const done = part.status === "completed";
+		const card = new Box(1, 1, (text) =>
+			theme.bg(
+				failed ? "toolErrorBg" : done ? "toolSuccessBg" : "toolPendingBg",
+				text,
+			),
+		);
+		const summary = plain(toolSummary(part.input));
+		card.addChild(
+			new Text(
+				`${failed ? theme.fg("error", "✗") : done ? theme.fg("success", "✓") : theme.fg("warning", "●")} ${theme.bold(theme.fg("toolTitle", plain(part.name)))}${summary ? ` ${theme.fg("accent", summary)}` : ""}`,
+				0,
+				0,
+			),
+		);
+		if (expanded && part.input)
+			card.addChild(new Text(theme.fg("muted", plain(part.input)), 0, 0));
+		const output = failed ? toolError(part.output) : part.output;
+		if (output) card.addChild(preview(output, failed ? "error" : "toolOutput"));
+		files(card, part.files);
+		return card;
+	};
+	// People get Pi's own message card, with a name line for shared sessions.
+	const person = (entry: HistoryEntry): Component => {
+		const card = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
+		const author = plain(entry.author ?? "User");
+		const own = author.endsWith(" (you)");
+		const [state, tone] = DELIVERY[entry.status ?? entry.delivery ?? ""] ?? [];
+		card.addChild(
+			new Text(
+				[
+					theme.bold(
+						theme.fg(own ? "accent" : "text", author.replace(/ \(you\)$/, "")),
+					),
+					own ? theme.fg("dim", " (you)") : "",
+					entry.created
+						? theme.fg(
+								"dim",
+								`  ${new Date(entry.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+							)
+						: "",
+					entry.harness === "codex" || entry.harness === "claude"
+						? theme.fg(
+								"muted",
+								` · Sent from ${entry.harness === "codex" ? "Codex" : "Claude"}`,
+							)
+						: "",
+					state && tone ? theme.fg(tone, ` · ${state}`) : "",
+				].join(""),
+				0,
+				0,
+			),
+		);
+		for (const part of entry.parts)
+			if (part.type === "file") files(card, [part]);
+			else if (part.type === "text")
+				card.addChild(
+					new Markdown(plain(part.text), 0, 0, getMarkdownTheme(), {
+						color: (text) => theme.fg("userMessageText", text),
+					}),
+				);
+		return card;
+	};
 	return {
 		invalidate() {
 			rendered?.invalidate();
@@ -344,48 +469,37 @@ export function createHistoryComponent(
 			if (entry !== previous || !rendered) {
 				previous = entry;
 				rendered = new Container();
-				const label =
-					entry.role === "user"
-						? (entry.author ?? "User")
-						: entry.role === "assistant"
-							? "Assistant"
-							: "Session";
-				rendered.addChild(
-					new Text(
-						plain(
-							`${label}${entry.created ? ` · ${new Date(entry.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}${entry.harness === "codex" ? " · Sent from Codex" : entry.harness === "claude" ? " · Sent from Claude" : ""}${entry.status ? ` · ${entry.status}` : entry.delivery && entry.delivery !== "sent" ? ` · ${entry.delivery}` : ""}`,
-						),
-						0,
-						1,
-					),
-				);
-				for (const part of entry.parts) {
-					switch (part.type) {
-						case "text":
+				rendered.addChild(new Spacer(1));
+				if (entry.role === "user") rendered.addChild(person(entry));
+				else
+					for (const [index, part] of entry.parts.entries()) {
+						if (index) rendered.addChild(new Spacer(1));
+						if (part.type === "text")
 							rendered.addChild(
-								new Markdown(plain(part.text), 0, 0, getMarkdownTheme()),
+								entry.role === "system"
+									? new Text(
+											theme.italic(theme.fg("dim", plain(part.text))),
+											1,
+											0,
+										)
+									: new Markdown(plain(part.text), 1, 0, getMarkdownTheme()),
 							);
-							break;
-						case "reasoning":
-							rendered.addChild(new Text("Thinking", 0, 0));
-							if (expanded)
-								rendered.addChild(
-									new Markdown(plain(part.text), 0, 0, getMarkdownTheme()),
-								);
-							break;
-						case "file":
-							files(rendered, [part]);
-							break;
-						case "tool":
+						else if (part.type === "reasoning")
 							rendered.addChild(
-								new Text(plain(`${part.name} · ${part.status}`), 0, 1),
+								expanded
+									? new Markdown(plain(part.text), 1, 0, getMarkdownTheme(), {
+											color: (text) => theme.fg("thinkingText", text),
+											italic: true,
+										})
+									: new Text(
+											theme.italic(theme.fg("thinkingText", "Thinking…")),
+											1,
+											0,
+										),
 							);
-							if (part.input) rendered.addChild(toolText(part.input));
-							if (part.output) rendered.addChild(toolText(part.output));
-							files(rendered, part.files);
-							break;
+						else if (part.type === "file") files(rendered, [part]);
+						else if (part.type === "tool") rendered.addChild(tool(part));
 					}
-				}
 			}
 			return rendered.render(width);
 		},

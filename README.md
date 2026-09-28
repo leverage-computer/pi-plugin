@@ -38,9 +38,11 @@ The plugin reads your existing Leverage CLI profile. If the CLI is unavailable,
 you can instead supply `LEVERAGE_HOST`, `LEVERAGE_WORKSPACE`, and `LEVERAGE_TOKEN`
 through your environment. See the connection settings below.
 
-Pi opens its normal empty composer. Press F1 context, F2 model, F3 sharing,
-F4 people, or F5 provider to change one draft setting. Press F6 to open a
-session, or F7 to browse channels. Type normally to send a shared message. Everyone viewing that task can see your message and the agent's answer.
+Pi opens its normal empty composer. Above it, each draft setting shows its
+current value next to its key: F1 context, F2 model, F3 sharing, F4 people, and
+F5 provider. Press F6 to open a session, or F7 to browse channels. Type
+normally to send a shared message. Everyone viewing that task can see your
+message and the agent's answer.
 Messages from the web app or another Pi client appear in the same conversation.
 Opening a session reads its state without starting compute or an agent turn.
 
@@ -50,6 +52,8 @@ To update this package, run `pi update git:github.com/thepresciencecompany/pi-pl
 Pi registers a display-only Leverage model; no Pi `/login` is required.
 The selected hosted model comes from the Leverage settings drawer.
 For a pinned composer and activity strip, launch `pi --tui-mode fullscreen`.
+To hide Pi's startup list of loaded resources, set `"quietStartup": true` in
+Pi's `settings.json`.
 
 ## Session controls
 
@@ -94,8 +98,9 @@ Closing Pi also leaves the shared agent running.
 ## Workspace drawers
 
 Settings and navigation open on the right of wide terminals and fill narrow
-terminals. Type to search, use arrows and Enter to choose, F1 for full details,
-and Escape to return. The main composer and attachment paths survive drawers.
+terminals. Type to filter, use arrows and Enter to choose, and Escape to return.
+A check mark shows the current choice. When a row does not fit, its full text
+shows under the list. The main composer and attachment paths survive drawers.
 Session drafts stay scoped to the remote session while Pi is open.
 
 A new session's repository, channel, and standalone context are mutually
@@ -119,11 +124,13 @@ revocation closes the affected view.
 
 Channels show unread counts and canonical participant names. Tab switches
 between the channel composer and message navigation; Enter on a message opens
-thread/session actions. F2 opens associated sessions; F3 fetches older messages.
+thread/session actions. F6 opens associated sessions; Up on the first message
+loads older messages.
 Channel and thread drafts are independent from the main conversation draft.
 
 The activity strip shows connection, agent, changed-file and approval state,
-active viewers, and typing. Changes uses the existing file-source, live-status,
+active viewers, and typing. A key bar under the composer lists the function
+keys for the current view. Changes uses the existing file-source, live-status,
 and file-read APIs. Saved changes and live edits share a file entry, with real
 line counts and scrollable diffs; binary or unavailable data is labeled.
 Opening a drawer never approves a request or publishes files.

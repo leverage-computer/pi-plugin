@@ -212,7 +212,12 @@ describe("Leverage session picker", () => {
 				});
 				const component = await factory(
 					{ requestRender() {} } as TUI,
-					{ fg: (_color: string, text: string) => text } as Theme,
+					{
+						fg: (_color: string, text: string) => text,
+						bg: (_color: string, text: string) => text,
+						bold: (text: string) => text,
+						italic: (text: string) => text,
+					} as Theme,
 					{} as KeybindingsManager,
 					finish,
 				);

@@ -5,19 +5,41 @@ import {
 import { chooseDrawer, type DrawerItem, textDrawer } from "./drawers";
 import { nativeId, type WorkspaceClient } from "./workspace-api";
 import type {
+	Channel,
 	SessionDraft,
 	SessionGrant,
 	WorkspaceSession,
 } from "./workspace-schema";
 
-export function draftSummary(draft: SessionDraft): string {
-	const context =
-		draft.context.type === "repo"
-			? `Repository${draft.context.branch ? ` / ${draft.context.branch}` : ""}`
-			: draft.context.type === "channel"
-				? "Channel context"
-				: "Standalone";
-	return `${context} · ${draft.model ?? draft.providerFamily ?? "Leverage defaults"}${draft.reasoningEffort ? ` / ${draft.reasoningEffort}` : ""} · ${draft.mode === "yolo" ? "Build" : "Plan"} · ${draft.visibility === "workspace" ? "Public to workspace" : "Private"}`;
+export function visibilityName(visibility: string): string {
+	return visibility === "workspace"
+		? "Public"
+		: visibility === "private"
+			? "Private"
+			: visibility.charAt(0).toUpperCase() + visibility.slice(1);
+}
+const relative = new Intl.RelativeTimeFormat("en", {
+	numeric: "auto",
+	style: "narrow",
+});
+function ago(time?: string): string {
+	const minutes = Math.round((Date.parse(time ?? "") - Date.now()) / 60_000);
+	if (!Number.isFinite(minutes)) return "";
+	if (minutes > -60) return relative.format(minutes, "minute");
+	if (minutes > -1440) return relative.format(Math.round(minutes / 60), "hour");
+	return relative.format(Math.round(minutes / 1440), "day");
+}
+export function contextName(
+	draft: SessionDraft,
+	channels: Channel[] = [],
+	repos: Array<{ id: string; fullName: string }> = [],
+): string {
+	const context = draft.context;
+	if (context.type === "repo")
+		return `${repos.find((one) => one.id === context.repoConnectionId)?.fullName ?? "Repository"}${context.branch ? ` / ${context.branch}` : ""}`;
+	if (context.type === "channel")
+		return `#${channels.find((one) => one.id === context.channelId)?.name ?? "channel"}`;
+	return "Standalone";
 }
 
 export async function pickGrant(
@@ -84,7 +106,7 @@ export async function editDraft(
 	ctx: ExtensionContext,
 	draft: SessionDraft,
 	signal: AbortSignal,
-	changed: () => void,
+	changed: (context: string) => void,
 	initial?: string,
 ): Promise<void> {
 	let action = initial;
@@ -105,16 +127,6 @@ export async function editDraft(
 			api.repos(signal),
 			api.transport.models(signal),
 		]);
-		const contextLabel =
-			draft.context.type === "repo"
-				? (repos.find(
-						(one) =>
-							draft.context.type === "repo" &&
-							one.id === draft.context.repoConnectionId,
-					)?.fullName ?? "Unavailable repository")
-				: draft.context.type === "channel"
-					? `#${channels.find((one) => draft.context.type === "channel" && one.id === draft.context.channelId)?.name ?? "Unavailable channel"}`
-					: "Standalone";
 		action ??= await chooseDrawer(
 			ctx,
 			"New session settings",
@@ -122,7 +134,7 @@ export async function editDraft(
 				{
 					value: "context",
 					label: "Repository or channel",
-					detail: contextLabel,
+					detail: contextName(draft, channels, repos),
 				},
 				...(draft.context.type === "repo"
 					? [
@@ -164,7 +176,9 @@ export async function editDraft(
 				{
 					value: "members",
 					label: "People and channels",
-					detail: `${draft.grants.length} grants`,
+					detail: draft.grants.length
+						? `${draft.grants.length} invited`
+						: "None",
 				},
 				{ value: "access", label: "Preview agent access" },
 				{ value: "done", label: "Back to composer" },
@@ -174,8 +188,14 @@ export async function editDraft(
 		);
 		if (!action || action === "done") return;
 		if (action === "context") {
+			const context = draft.context;
 			const choices: DrawerItem[] = [
-				{ value: "none", label: "Standalone" },
+				{
+					value: "none",
+					label: "Standalone",
+					detail: "No repository or channel",
+					current: context.type === "none",
+				},
 				...repos.map((one) => ({
 					value: `repo:${one.id}`,
 					label: one.fullName,
@@ -184,11 +204,14 @@ export async function editDraft(
 							? "Repository"
 							: "Disconnected",
 					disabled: one.connectionStatus !== "connected",
+					current:
+						context.type === "repo" && context.repoConnectionId === one.id,
 				})),
 				...channels.map((one) => ({
 					value: `channel:${one.id}`,
 					label: `#${one.name ?? "channel"}`,
-					detail: "Channel context",
+					detail: "Channel",
+					current: context.type === "channel" && context.channelId === one.id,
 				})),
 			];
 			const picked = await chooseDrawer(
@@ -196,6 +219,7 @@ export async function editDraft(
 				"Session context",
 				choices,
 				signal,
+				"Where the agent works and what it can read",
 			);
 			if (picked) {
 				draft.context =
@@ -214,11 +238,18 @@ export async function editDraft(
 				ctx,
 				"Repository branch",
 				[
-					{ value: "default", label: "Repository default" },
+					{
+						value: "default",
+						label: "Repository default",
+						current: !draft.context.branch,
+					},
 					...branches.map((one) => ({
 						value: one.name,
 						label: one.name,
 						detail: one.isDefault ? "Default branch" : undefined,
+						current:
+							draft.context.type === "repo" &&
+							draft.context.branch === one.name,
 					})),
 				],
 				signal,
@@ -233,12 +264,17 @@ export async function editDraft(
 				ctx,
 				"Hosted provider",
 				[
-					{ value: "default", label: "Leverage default" },
+					{
+						value: "default",
+						label: "Leverage default",
+						current: !draft.providerFamily,
+					},
 					...(["claude_code", "codex"] as const).map((family) => ({
 						value: family,
 						label: family === "codex" ? "Codex" : "Claude",
 						detail: defaults.healthy[family] ? "Connected" : "Unavailable",
 						disabled: !defaults.healthy[family],
+						current: draft.providerFamily === family,
 					})),
 				],
 				signal,
@@ -266,12 +302,14 @@ export async function editDraft(
 					{
 						value: "default",
 						label: "Leverage default",
-						detail: "Inherit channel / workspace settings",
+						detail: "Channel or workspace setting",
+						current: !draft.model,
 					},
 					...usable.map((one) => ({
 						value: one.id,
 						label: one.name,
-						detail: one.family,
+						detail: one.family === "codex" ? "Codex" : "Claude",
+						current: draft.model === one.id,
 					})),
 				],
 				signal,
@@ -290,7 +328,7 @@ export async function editDraft(
 						ctx,
 						"Reasoning effort",
 						[
-							{ value: "default", label: "Leverage default" },
+							{ value: "default", label: "Leverage default", current: true },
 							...model.variants.map((one) => ({
 								value: one.id,
 								label: one.id,
@@ -310,11 +348,13 @@ export async function editDraft(
 						value: "yolo",
 						label: "Build",
 						detail: "Run tools under Leverage approval policy",
+						current: draft.mode === "yolo",
 					},
 					{
 						value: "plan",
 						label: "Plan",
 						detail: "Plan before implementation",
+						current: draft.mode === "plan",
 					},
 				],
 				signal,
@@ -331,11 +371,13 @@ export async function editDraft(
 						value: "private",
 						label: "Private",
 						detail: "Owner and invited people",
+						current: draft.visibility === "private",
 					},
 					{
 						value: "workspace",
 						label: "Public to workspace",
-						detail: "Workspace members can read by link",
+						detail: "Members can read by link",
+						current: draft.visibility === "workspace",
 					},
 				],
 				signal,
@@ -351,7 +393,7 @@ export async function editDraft(
 				ctx,
 				"Session invitations",
 				[
-					{ value: "add", label: "+ Add person or channel" },
+					{ value: "add", label: "+ Add a person or channel" },
 					...draft.grants.map((grant, index) => ({
 						value: String(index),
 						label:
@@ -359,10 +401,11 @@ export async function editDraft(
 								? (members.find((one) => one.id === grant.principalId)?.name ??
 									"Unknown member")
 								: `#${channels.find((one) => one.id === grant.principalId)?.name ?? grant.principalId}`,
-						detail: `${grant.role} · Enter to remove`,
+						detail: `${grant.role === "collaborator" ? "Collaborator" : "Viewer"} · Enter removes`,
 					})),
 				],
 				signal,
+				"People and channels invited when the session starts",
 			);
 			if (picked === "add") {
 				const grant = await pickGrant(api, ctx, signal);
@@ -391,7 +434,7 @@ export async function editDraft(
 				signal,
 			);
 		}
-		changed();
+		changed(contextName(draft, channels, repos));
 		// A direct setting key returns to the composer after one change.
 		if (initial) return;
 		action = undefined;
@@ -423,16 +466,13 @@ export async function shareSession(
 				{
 					value: "visibility",
 					label: "Visibility",
-					detail:
-						sharing.visibility === "workspace"
-							? "Public to workspace"
-							: sharing.visibility,
+					detail: visibilityName(sharing.visibility),
 				},
-				{ value: "add", label: "+ Add person or channel" },
+				{ value: "add", label: "+ Add a person or channel" },
 				...sharing.members.map((member, i) => ({
 					value: String(i),
 					label: memberName(member),
-					detail: member.role,
+					detail: member.role === "collaborator" ? "Collaborator" : "Viewer",
 				})),
 			],
 			signal,
@@ -458,8 +498,16 @@ export async function shareSession(
 				ctx,
 				"Session visibility",
 				[
-					{ value: "private", label: "Private" },
-					{ value: "workspace", label: "Public to workspace" },
+					{
+						value: "private",
+						label: "Private",
+						current: sharing.visibility === "private",
+					},
+					{
+						value: "workspace",
+						label: "Public to workspace",
+						current: sharing.visibility === "workspace",
+					},
 				],
 				signal,
 			);
@@ -475,8 +523,18 @@ export async function shareSession(
 				ctx,
 				memberName(member),
 				[
-					{ value: "viewer", label: "Viewer" },
-					{ value: "collaborator", label: "Collaborator" },
+					{
+						value: "viewer",
+						label: "Viewer",
+						detail: "Read the conversation",
+						current: member.role === "viewer",
+					},
+					{
+						value: "collaborator",
+						label: "Collaborator",
+						detail: "Send prompts and answer approvals",
+						current: member.role === "collaborator",
+					},
 					{ value: "remove", label: "Remove access" },
 				],
 				signal,
@@ -515,7 +573,14 @@ export async function sessionsDrawer(
 					.map((one) => ({
 						value: one.id,
 						label: one.title || "Untitled session",
-						detail: `${one.status} · ${one.visibility} · ${one.model ?? one.providerFamily}`,
+						detail: [
+							one.status.charAt(0).toUpperCase() + one.status.slice(1),
+							visibilityName(one.visibility),
+							one.model ?? one.providerFamily,
+							ago(one.updatedAt),
+						]
+							.filter(Boolean)
+							.join(" · "),
 					})),
 			],
 			signal,

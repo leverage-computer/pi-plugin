@@ -6,8 +6,13 @@ import {
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	type InputEvent,
+	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Text } from "@earendil-works/pi-tui";
+import {
+	matchesKey,
+	truncateToWidth,
+	visibleWidth,
+} from "@earendil-works/pi-tui";
 import {
 	type LeverageConnection,
 	type PromptFile,
@@ -37,10 +42,11 @@ import { WorkspaceClient } from "./workspace-api";
 import type { SessionDraft } from "./workspace-schema";
 import { SharedSession } from "./workspace-state";
 import {
-	draftSummary,
+	contextName,
 	editDraft,
 	sessionsDrawer,
 	shareSession,
+	visibilityName,
 } from "./workspace-ui";
 
 type Prompt = {
@@ -108,7 +114,8 @@ export default function leverage(pi: ExtensionAPI): void {
 	let draftError: string | undefined;
 	let creating = false;
 	let pendingCreation: Prompt | undefined;
-	let changeSummary = "Changes: checking";
+	let changeSummary = "Checking changes…";
+	let draftContext = "Standalone";
 	let attachment: AbortController | undefined;
 	let conversations = new Map<string, ChannelConversation>();
 	let composerKey: string | undefined;
@@ -126,7 +133,7 @@ export default function leverage(pi: ExtensionAPI): void {
 	let running = false;
 	let activityVersion = 0;
 	let streamState = "disconnected";
-	let model = "Session model";
+	let model = "";
 	let failure = "Choose or create a session with /leverage.";
 	let sending = false;
 	let stopping = false;
@@ -140,6 +147,8 @@ export default function leverage(pi: ExtensionAPI): void {
 		const value = pi.getFlag(`leverage-${name}`);
 		return typeof value === "string" ? value : undefined;
 	};
+	const describeChanges = (count: number, note: string) =>
+		`${count === 1 ? "1 changed file" : `${count} changed files`}${note ? " (partial)" : ""}`;
 	const status = (ctx: ExtensionContext) => {
 		ctx.ui.setStatus(
 			"leverage",
@@ -151,55 +160,170 @@ export default function leverage(pi: ExtensionAPI): void {
 						: "Leverage: connecting",
 			),
 		);
+		// Other modes forward widget text, so only the terminal gets colors.
+		const theme = ctx.mode === "tui" ? ctx.ui.theme : undefined;
+		const paint = (color: ThemeColor, value: string, bold = false) => {
+			const text = stripVTControlCharacters(value);
+			return theme ? theme.fg(color, bold ? theme.bold(text) : text) : text;
+		};
+		const pairs = (rows: string[][]) =>
+			rows
+				.map(
+					([key, label, value]) =>
+						`${paint("accent", key)} ${paint(value ? "dim" : "muted", label)}${value ? ` ${paint("text", value)}` : ""}`,
+				)
+				.join("   ");
+		if (theme)
+			ctx.ui.setWidget(
+				"leverage-keys",
+				[
+					pairs(
+						selected
+							? [
+									["F1", "Details"],
+									["F2", "Model"],
+									["F3", "Share"],
+									["F6", "Sessions"],
+									["F7", "Channels"],
+									["F8", "Changes"],
+									["F9", "Approvals"],
+								]
+							: [
+									["F6", "Sessions"],
+									["F7", "Channels"],
+								],
+					),
+				],
+				{ placement: "belowEditor" },
+			);
+		const approvals = interactions?.approvalCount ?? 0;
+		const questions = interactions?.questionCount ?? 0;
+		const typing = [...(shared?.typing ?? [])]
+			.filter(([id]) => id !== shared?.userId)
+			.map(([, name]) => name);
 		ctx.ui.setWidget(
 			"leverage-session",
 			selected
 				? [
-						stripVTControlCharacters(
-							`${selected.title || selected.id} · ${!ready ? "Connecting" : running ? "Working · Esc or /leverage stop" : "Ready"}`,
-						),
-						...(failedPrompt
-							? [
-									"Send not confirmed. /leverage retry sends the same message ID.",
-								]
-							: []),
+						`${paint("text", selected.title || selected.id, true)}  ${
+							!ready
+								? paint("muted", "○ Connecting…")
+								: running
+									? paint("warning", "● Working · Esc to stop")
+									: paint("success", "● Ready")
+						}`,
 						...(shared
 							? [
-									stripVTControlCharacters(
-										`${shared.canWrite ? (shared.session?.ownerId === shared.userId ? "Owner" : "Collaborator") : "Read-only"} · ${shared.session?.visibility ?? "Checking access"} · ${interactions?.approvalCount ?? 0} approvals · ${changeSummary}`,
-									),
-									stripVTControlCharacters(
-										[...shared.viewers.values()]
-											.map(
-												(one) =>
-													`${one.userName}${one.state === "idle" ? " (idle)" : ""}`,
-											)
+									paint(
+										"dim",
+										[
+											shared.canWrite
+												? shared.session?.ownerId === shared.userId
+													? "Owner"
+													: "Collaborator"
+												: "Read-only",
+											shared.session
+												? visibilityName(shared.session.visibility)
+												: "Checking access",
+											changeSummary,
+											[...shared.viewers.values()]
+												.map(
+													(one) =>
+														`${one.userName}${one.state === "idle" ? " (idle)" : ""}`,
+												)
+												.join(", "),
+										]
+											.filter(Boolean)
 											.join(" · "),
 									),
-									...([...shared.typing].some(([id]) => id !== shared?.userId)
-										? [
-												stripVTControlCharacters(
-													[...shared.typing]
-														.filter(([id]) => id !== shared?.userId)
-														.map(([, name]) => name)
-														.join(", ") + " typing…",
-												),
-											]
-										: []),
+								]
+							: []),
+						...(typing.length
+							? [
+									paint(
+										"muted",
+										`${typing.join(", ")} ${typing.length === 1 ? "is" : "are"} typing…`,
+									),
+								]
+							: []),
+						...(approvals
+							? [
+									paint(
+										"warning",
+										`▲ ${approvals === 1 ? "1 approval" : `${approvals} approvals`} waiting · F9 to review`,
+									),
+								]
+							: []),
+						...(questions
+							? [
+									paint(
+										"warning",
+										`? ${questions === 1 ? "1 question" : `${questions} questions`} waiting · /leverage questions`,
+									),
+								]
+							: []),
+						...(failedPrompt
+							? [
+									paint(
+										"warning",
+										"▲ Send not confirmed · /leverage retry sends the same message",
+									),
 								]
 							: []),
 					]
 				: [
-						"New Leverage session",
+						`${paint("accent", "◆ New Leverage session", true)}${
+							draft
+								? paint(
+										"dim",
+										`  ${draft.mode === "yolo" ? "Build" : "Plan"} mode · Enter creates it`,
+									)
+								: ""
+						}`,
 						draft
-							? stripVTControlCharacters(draftSummary(draft))
-							: (draftError ?? "Loading Leverage defaults…"),
+							? pairs([
+									["F1", "Context", draftContext],
+									[
+										"F2",
+										"Model",
+										draft.model
+											? `${draft.model}${draft.reasoningEffort ? ` · ${draft.reasoningEffort}` : ""}`
+											: "Default",
+									],
+									[
+										"F3",
+										"Sharing",
+										draft.visibility === "workspace" ? "Public" : "Private",
+									],
+									[
+										"F4",
+										"People",
+										draft.grants.length
+											? `${draft.grants.length} invited`
+											: "None",
+									],
+									[
+										"F5",
+										"Provider",
+										draft.providerFamily === "codex"
+											? "Codex"
+											: draft.providerFamily === "claude_code"
+												? "Claude"
+												: "Default",
+									],
+								])
+							: paint(
+									draftError ? "error" : "dim",
+									draftError ?? "Loading Leverage defaults…",
+								),
 						...(pendingCreation
 							? [
-									"Setup not confirmed. /leverage retry continues the same session.",
+									paint(
+										"warning",
+										"▲ Setup not confirmed · /leverage retry continues the same session",
+									),
 								]
 							: []),
-						"F1 Context · F2 Model · F3 Sharing · F4 People · F5 Provider · F6 Sessions · F7 Channels",
 					],
 		);
 	};
@@ -238,7 +362,8 @@ export default function leverage(pi: ExtensionAPI): void {
 		draftError = undefined;
 		creating = false;
 		pendingCreation = undefined;
-		changeSummary = "Changes: checking";
+		changeSummary = "Checking changes…";
+		draftContext = "Standalone";
 		terminal?.close();
 		api?.close();
 		terminal = undefined;
@@ -249,7 +374,7 @@ export default function leverage(pi: ExtensionAPI): void {
 		running = false;
 		activityVersion = 0;
 		streamState = "disconnected";
-		model = "Session model";
+		model = "";
 		refresh = undefined;
 		refreshRequested = false;
 		sending = false;
@@ -412,6 +537,7 @@ export default function leverage(pi: ExtensionAPI): void {
 			session.id,
 			signal,
 			() => !!shared?.canWrite && !shared.revoked,
+			() => status(ctx),
 		);
 		if (!sessionLink(ctx.sessionManager.getBranch()))
 			pi.appendEntry(LINK_ENTRY, linkFor(session));
@@ -511,13 +637,13 @@ export default function leverage(pi: ExtensionAPI): void {
 			void reviewChanges(workspace!, session.id, signal)
 				.then((review) => {
 					if (opening === generation) {
-						changeSummary = `${review.files.length} changed files${review.note ? " · status incomplete" : ""}`;
+						changeSummary = describeChanges(review.files.length, review.note);
 						status(ctx);
 					}
 				})
 				.catch(() => {
 					if (opening === generation) {
-						changeSummary = "Changes: unavailable";
+						changeSummary = "Changes unavailable";
 						status(ctx);
 					}
 				})
@@ -644,7 +770,7 @@ export default function leverage(pi: ExtensionAPI): void {
 
 	pi.registerEntryRenderer<Pick<HistoryEntry, "sessionId" | "id">>(
 		HISTORY_ENTRY,
-		(entry, options) =>
+		(entry, options, theme) =>
 			createHistoryComponent(
 				() =>
 					history
@@ -655,6 +781,7 @@ export default function leverage(pi: ExtensionAPI): void {
 								item.sessionId === entry.data?.sessionId,
 						),
 				options.expanded,
+				theme,
 			),
 	);
 	pi.on("input", async (event, ctx) => {
@@ -748,30 +875,45 @@ export default function leverage(pi: ExtensionAPI): void {
 			};
 			return editor;
 		});
-		ctx.ui.setHeader(
-			(_tui, theme) =>
-				new Text(
-					theme.fg(
-						"accent",
-						"Leverage · F1–F5 Settings · F6 Sessions · F7 Channels · F8 Changes · F9 Approvals",
-					),
-					1,
-					1,
+		ctx.ui.setHeader((_tui, theme) => ({
+			invalidate() {},
+			render: (width) => [
+				"",
+				truncateToWidth(
+					` ${theme.bold(theme.fg("accent", "◆ Leverage"))}${theme.fg("dim", stripVTControlCharacters(connection ? `  ${connection.workspace}` : ""))}`,
+					width,
 				),
-		);
+			],
+		}));
 		ctx.ui.setFooter((_tui, theme) => ({
 			invalidate() {},
-			render: (width) =>
-				new Text(
+			render: (width) => {
+				const state = theme.fg(
+					streamState === "live"
+						? "success"
+						: streamState === "disconnected"
+							? "error"
+							: "warning",
+					`● ${streamState}`,
+				);
+				const place = truncateToWidth(
 					theme.fg(
 						"dim",
 						stripVTControlCharacters(
-							`${connection?.workspace ?? "Leverage"} · ${model} · ${streamState}`,
+							[connection?.workspace ?? "Leverage", model]
+								.filter(Boolean)
+								.join(" · "),
 						),
 					),
-					0,
-					0,
-				).render(width),
+					Math.max(0, width - visibleWidth(state) - 2),
+				);
+				return [
+					truncateToWidth(
+						`${place}${" ".repeat(Math.max(2, width - visibleWidth(place) - visibleWidth(state)))}${state}`,
+						width,
+					),
+				];
+			},
 		}));
 		try {
 			const link = sessionLink(ctx.sessionManager.getBranch());
@@ -831,16 +973,23 @@ export default function leverage(pi: ExtensionAPI): void {
 					.then(async (loaded) => {
 						if (opening !== generation) return;
 						draft = { ...loaded, ...overrides };
-						if (!overrides?.context && connection?.directory) {
-							const channels = await workspace!.channels(lifetime.signal);
-							const channel = channels.find(
-								(one) =>
-									connection!.directory ===
-									`/${connection!.workspace}/${one.name}`,
-							);
-							if (channel && opening === generation && draft)
-								draft.context = { type: "channel", channelId: channel.id };
-						}
+						const channels =
+							draft.context.type === "channel" || connection?.directory
+								? await workspace!.channels(lifetime.signal)
+								: [];
+						const channel = channels.find(
+							(one) =>
+								connection!.directory ===
+								`/${connection!.workspace}/${one.name}`,
+						);
+						if (
+							!overrides?.context &&
+							channel &&
+							opening === generation &&
+							draft
+						)
+							draft.context = { type: "channel", channelId: channel.id };
+						if (draft) draftContext = contextName(draft, channels);
 						if (opening === generation) status(ctx);
 					})
 					.catch((error: unknown) => {
@@ -969,7 +1118,10 @@ export default function leverage(pi: ExtensionAPI): void {
 							ctx,
 							draft,
 							lifetime.signal,
-							() => status(ctx),
+							(context) => {
+								draftContext = context;
+								status(ctx);
+							},
 							section,
 						);
 					} else {
@@ -1026,7 +1178,10 @@ export default function leverage(pi: ExtensionAPI): void {
 								ctx,
 								draft,
 								lifetime.signal,
-								() => status(ctx),
+								(context) => {
+									draftContext = context;
+									status(ctx);
+								},
 								"visibility",
 							);
 					} else if (shared?.session) {
@@ -1048,7 +1203,7 @@ export default function leverage(pi: ExtensionAPI): void {
 						session.id,
 						signal,
 						(count, note) => {
-							changeSummary = `${count} changed files${note ? " · status incomplete" : ""}`;
+							changeSummary = describeChanges(count, note);
 							status(ctx);
 						},
 					);

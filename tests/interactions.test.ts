@@ -53,7 +53,6 @@ function fixture(
 		permissions: [permission],
 		forms: [] as SessionForm[],
 		writes: [] as Array<{ method: string; path: string; body?: unknown }>,
-		widgets: [] as Array<string[] | undefined>,
 		notifications: [] as string[],
 	};
 	const server = Bun.serve({
@@ -91,8 +90,6 @@ function fixture(
 		hasUI: true,
 		mode: "tui",
 		ui: {
-			setWidget: (_key: string, content: string[] | undefined) =>
-				state.widgets.push(content),
 			notify: (message: string) => state.notifications.push(message),
 			...ui,
 		},
@@ -180,7 +177,7 @@ describe("Leverage shared interactions", () => {
 		state.permissions = [{ ...permission, action: "\u001b[2Jpublish change" }];
 		await pending.show("approvals");
 		expect(state.writes).toHaveLength(0);
-		expect(state.widgets.at(-1)?.[0]).toContain("1 approval");
+		expect(pending.approvalCount).toBe(1);
 		action = "Approve once";
 		await pending.show("approvals");
 		action = "Deny";
@@ -255,7 +252,7 @@ describe("Leverage shared interactions", () => {
 		await showing;
 		expect(state.writes).toHaveLength(0);
 		expect(pending.hasDialog).toBe(false);
-		expect(state.widgets.at(-1)).toBeUndefined();
+		expect(pending.approvalCount + pending.questionCount).toBe(0);
 	});
 
 	test("requires a fresh approval when the requested arguments change", async () => {
@@ -324,7 +321,7 @@ describe("Leverage shared interactions", () => {
 		release();
 		await refreshing;
 		expect(reads).toBe(2);
-		expect(state.widgets.at(-1)).toBeUndefined();
+		expect(pending.approvalCount).toBe(0);
 	});
 
 	test("session shutdown cancels a question without rejecting it remotely", async () => {

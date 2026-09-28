@@ -28,6 +28,8 @@ import { HISTORY_ENTRY } from "../src/history";
 import { LINK_ENTRY, sessionLink } from "../src/session-ui";
 import { nativeId } from "../src/workspace-api";
 
+// Terminal widgets and history rows draw with the active Pi theme.
+initTheme("dark", false);
 const directories: string[] = [];
 const disposals: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -388,7 +390,6 @@ async function command(runner: ExtensionRunner, text: string) {
 }
 
 function transcript(runner: ExtensionRunner) {
-	initTheme("dark", false);
 	const renderer = runner.getEntryRenderer(HISTORY_ENTRY);
 	if (!renderer) throw new Error("Missing shared history renderer");
 	return stripVTControlCharacters(
@@ -750,7 +751,7 @@ describe("Pi hosted frontend", () => {
 		for (const runner of [first, second]) {
 			expect(historyRows(runner)).toHaveLength(3);
 			expect(transcript(runner)).toContain("The project passes.");
-			expect(transcript(runner)).toContain("bash · completed");
+			expect(transcript(runner)).toContain("✓ bash bun test");
 			expect(
 				runner
 					.createContext()
@@ -773,7 +774,7 @@ describe("Pi hosted frontend", () => {
 		commandActions(runner);
 		await runner.emit({ type: "session_start", reason: "startup" });
 		await command(runner, "queue Check this after the current task");
-		expect(transcript(runner)).toContain("queued");
+		expect(transcript(runner)).toContain("Queued");
 		fixture.state.promptFailures = 1;
 		await runner.emitInput(
 			"Try exactly once until I ask",

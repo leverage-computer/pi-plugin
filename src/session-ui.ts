@@ -95,7 +95,7 @@ export async function viewRemoteHistory(
 				signal.addEventListener("abort", abort, { once: true });
 				const text = new Container();
 				for (const entry of projection.entries())
-					text.addChild(createHistoryComponent(() => entry, true));
+					text.addChild(createHistoryComponent(() => entry, true, theme));
 				if (!projection.entries().length)
 					text.addChild(new Text(content, 0, 0));
 				return {

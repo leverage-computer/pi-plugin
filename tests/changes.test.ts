@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { reviewChanges, textDiff } from "../src/changes";
+import { numberedDiff, reviewChanges, textDiff } from "../src/changes";
 import { SESSION, workspaceFixture } from "./workspace-fixture";
 
 const fixtures: ReturnType<typeof workspaceFixture>[] = [];
@@ -110,4 +110,24 @@ test("unavailable live files are distinct from an unchanged workspace", async ()
 	expect(diff.additions).toBe(1);
 	expect(diff.deletions).toBe(0);
 	expect(diff.patch).toContain("+first");
+});
+
+test("numbers diff lines from each hunk's own position in the old and new file", () => {
+	const before = Array.from({ length: 20 }, (_, n) => `line ${n + 1}`);
+	const after = [...before];
+	after[1] = "second";
+	after.splice(15, 1);
+	const { patch = "" } = textDiff(
+		"notes.txt",
+		`${before.join("\n")}\n`,
+		`${after.join("\n")}\n`,
+	);
+	const numbered = numberedDiff(patch).split("\n");
+	expect(numbered).toContain("- 2 line 2");
+	expect(numbered).toContain("+ 2 second");
+	expect(numbered).toContain("  5 line 5");
+	expect(numbered).toContain("    ...");
+	expect(numbered).toContain("-16 line 16");
+	expect(numbered).toContain(" 16 line 17");
+	expect(numberedDiff("not a patch")).toBe("");
 });
