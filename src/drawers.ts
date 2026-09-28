@@ -137,7 +137,7 @@ export async function chooseDrawer(
 					active ? theme.bold(shownLabel) : shownLabel,
 				)}${item.current ? theme.fg("success", " ✓") : ""}${" ".repeat(
 					Math.max(0, room - visibleWidth(shownDetail)),
-				)}${theme.fg("dim", shownDetail)}`;
+				)}${theme.fg(active ? "muted" : "dim", shownDetail)}`;
 				return {
 					line: active ? theme.bg("selectedBg", text) : text,
 					cut: shownLabel !== label || shownDetail !== detail,
@@ -151,7 +151,8 @@ export async function chooseDrawer(
 					const rows = values();
 					selected = Math.min(selected, Math.max(0, rows.length - 1));
 					const [heading = "", ...body] = clean(title).split("\n");
-					const bodyLines = wrap(body.join("\n").trim(), inner);
+					const text = body.join("\n").trim();
+					const bodyLines = text ? wrap(text, inner) : [];
 					const bodyLimit = Math.max(3, Math.floor(tui.terminal.rows * 0.35));
 					const top = [
 						...(subtitle
@@ -332,7 +333,7 @@ export async function textDrawer(
 			overlay: true,
 			overlayOptions: () => ({
 				anchor: "center",
-				width: "95%",
+				width: "100%",
 				maxHeight: "95%",
 			}),
 		},

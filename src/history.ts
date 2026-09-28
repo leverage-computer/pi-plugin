@@ -430,10 +430,10 @@ export function createHistoryComponent(
 					theme.bold(
 						theme.fg(own ? "accent" : "text", author.replace(/ \(you\)$/, "")),
 					),
-					own ? theme.fg("dim", " (you)") : "",
+					own ? theme.fg("muted", " (you)") : "",
 					entry.created
 						? theme.fg(
-								"dim",
+								"muted",
 								`  ${new Date(entry.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
 							)
 						: "",

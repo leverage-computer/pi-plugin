@@ -142,6 +142,7 @@ export default function leverage(pi: ExtensionAPI): void {
 	let refresh: Promise<void> | undefined;
 	let refreshRequested = false;
 	let dialogCount = 0;
+	let channelView = false;
 	const displayed = new Set<string>();
 	const flag = (name: string) => {
 		const value = pi.getFlag(`leverage-${name}`);
@@ -160,6 +161,12 @@ export default function leverage(pi: ExtensionAPI): void {
 						: "Leverage: connecting",
 			),
 		);
+		// The channel screen has its own header and key hints.
+		if (channelView) {
+			ctx.ui.setWidget("leverage-session", undefined);
+			ctx.ui.setWidget("leverage-keys", undefined);
+			return;
+		}
 		// Other modes forward widget text, so only the terminal gets colors.
 		const theme = ctx.mode === "tui" ? ctx.ui.theme : undefined;
 		const paint = (color: ThemeColor, value: string, bold = false) => {
@@ -1210,12 +1217,17 @@ export default function leverage(pi: ExtensionAPI): void {
 					return;
 				}
 				if (action === "channels") {
+					channelView = true;
+					status(ctx);
 					const destination = await channelsDrawer(
 						workspace!,
 						ctx,
 						lifetime.signal,
 						conversations,
-					);
+					).finally(() => {
+						channelView = false;
+						status(ctx);
+					});
 					if (destination && "sessionId" in destination)
 						await switchTo(
 							await client.get(`ses_${destination.sessionId}`, lifetime.signal),

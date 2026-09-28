@@ -303,7 +303,7 @@ export async function channelScreen(
 								name,
 							),
 						)}${theme.fg(
-							"dim",
+							"muted",
 							`  ${new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
 						)}${
 							message.harness === "codex" || message.harness === "claude"
@@ -340,10 +340,11 @@ export async function channelScreen(
 				}
 				lines = lines.slice(-available);
 				const title = `${theme.bold(theme.fg("accent", clean(`#${channel.name ?? "channel"}`)))}${threadId ? theme.fg("muted", " / Thread") : ""}`;
-				const state = theme.fg(
-					socket.status === "live" ? "success" : "warning",
-					`● ${socket.status}`,
-				);
+				// The footer already shows a live connection.
+				const state =
+					socket.status === "live"
+						? ""
+						: theme.fg("warning", `● ${socket.status}`);
 				const names = [...typing.values()].map(clean);
 				return [
 					truncateToWidth(

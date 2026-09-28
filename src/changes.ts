@@ -256,19 +256,6 @@ export async function changesDrawer(
 				ctx,
 				"Session changes",
 				() => [
-					{
-						value: "refresh",
-						label: loading ? "Refreshing…" : "Refresh changes",
-					},
-					...(error || review.note
-						? [
-								{
-									value: "status",
-									label: error ? "Refresh failed" : "File status",
-									detail: error || review.note,
-								},
-							]
-						: []),
 					...review.files.map((file) => ({
 						value: `${file.sourceId}:${file.path}`,
 						label: file.oldPath ? `${file.oldPath} → ${file.path}` : file.path,
@@ -285,6 +272,19 @@ export async function changesDrawer(
 								},
 							]
 						: []),
+					...(error || review.note
+						? [
+								{
+									value: "status",
+									label: error ? "Refresh failed" : "File status",
+									detail: error || review.note,
+								},
+							]
+						: []),
+					{
+						value: "refresh",
+						label: loading ? "Refreshing…" : "Refresh changes",
+					},
 				],
 				active,
 			);
@@ -295,11 +295,14 @@ export async function changesDrawer(
 			}
 			const file = () =>
 				review.files.find((one) => `${one.sourceId}:${one.path}` === picked);
+			const opened = file();
 			await textDrawer(
 				ctx,
-				picked === "status"
-					? "File status"
-					: picked.split(":").slice(1).join(":"),
+				opened
+					? opened.oldPath
+						? `${opened.oldPath} → ${opened.path}`
+						: opened.path
+					: "File status",
 				() => {
 					if (picked === "status") return error || review.note;
 					const current = file();
