@@ -595,9 +595,13 @@ export class PendingInteractions {
 			this.ctx.ui.notify("No hosted models are available.", "warning");
 			return;
 		}
-		const labels = models.map(
-			(model, index) =>
-				`${index + 1}. ${model.name} · ${model.providerID}/${model.id}`,
+		// The catalog's "session" entry keeps the current model. Repeated names also show their ids.
+		const labels = models.map((model) =>
+			model.id === "session"
+				? "Keep the current model"
+				: models.filter((one) => one.name === model.name).length > 1
+					? `${model.name} · ${model.id}`
+					: model.name,
 		);
 		const picked = await choose(this.ctx, "Leverage session model", labels, {
 			signal,
