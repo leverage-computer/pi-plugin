@@ -147,10 +147,6 @@ export function workspaceFixture(
 						})
 					: Response.json({ error: "Forbidden" }, { status: 403 });
 			}
-			if (path.endsWith("/file-sources"))
-				return Response.json({ sources: [], working: false });
-			if (path.endsWith("/live-file-status"))
-				return Response.json({ available: true, files: [] });
 			if (
 				path.startsWith("/api/opencode/api/session/") &&
 				request.method === "PATCH"

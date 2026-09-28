@@ -5,12 +5,9 @@ import {
 	bootstrapSchema,
 	channelSchema,
 	familySchema,
-	fileReadSchema,
-	liveFilesSchema,
 	memberSchema,
 	type SessionDraft,
 	sessionSchema,
-	sourcesSchema,
 } from "./workspace-schema";
 import { WorkspaceSocket } from "./workspace-socket";
 
@@ -210,33 +207,6 @@ export class WorkspaceClient {
 				signal,
 			);
 		return draft.sessionId;
-	}
-	sources(sessionId: string, signal?: AbortSignal) {
-		return this.read(
-			`/api/sessions/${id(nativeId(sessionId))}/file-sources`,
-			sourcesSchema,
-			signal,
-		);
-	}
-	liveFiles(sessionId: string, signal?: AbortSignal, wake = false) {
-		return this.read(
-			`/api/sessions/${id(nativeId(sessionId))}/live-file-status${wake ? "?wake=1" : ""}`,
-			liveFilesSchema,
-			signal,
-		);
-	}
-	file(
-		sessionId: string,
-		path: string,
-		resourceId: string,
-		commit?: string,
-		signal?: AbortSignal,
-	) {
-		return this.read(
-			`/api/sessions/${id(nativeId(sessionId))}/files/read?${new URLSearchParams({ path, resource_id: resourceId, ...(commit ? { commit } : {}), wake: "1" })}`,
-			fileReadSchema,
-			signal,
-		);
 	}
 	close(): void {
 		this.live?.close();

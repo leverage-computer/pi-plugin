@@ -189,10 +189,6 @@ function serverFixture(
 				return Response.json({ settings: [] });
 			if (path.endsWith("/provider-access/availability"))
 				return Response.json({ claude_code: true, codex: false });
-			if (path.endsWith("/file-sources"))
-				return Response.json({ sources: [], working: false });
-			if (path.endsWith("/live-file-status"))
-				return Response.json({ available: true, files: [] });
 			if (path.endsWith("/bootstrap")) {
 				const session =
 					sessions.find((one) => path.includes(nativeId(one.id))) ??

@@ -10,7 +10,7 @@ and owns shared state. This integration adds no backend code or migrations.
 flowchart TB
     subgraph Local["Your computer · this repository"]
         Pi["Pi terminal UI"]
-        Plugin["Leverage plugin<br/>Composer · drawers · chat · changes"]
+        Plugin["Leverage plugin<br/>Composer · drawers · chat"]
         Pi <--> Plugin
     end
 
@@ -30,7 +30,7 @@ flowchart TB
         Terminal <--> Tools
     end
 
-    Plugin <-->|"Creation · identity · access · files"| Native
+    Plugin <-->|"Creation · identity · access"| Native
     Plugin -->|"Prompts · queue · questions · approvals"| API
     API -->|"History and live SSE events"| Plugin
     Plugin <-->|"Manual ! / !! · WebSocket"| Terminal
@@ -150,10 +150,9 @@ if the connection or terminal startup fails.
 | [src/api.ts](src/api.ts) | HTTP requests, contract validation, token renewal, and SSE |
 | [src/history.ts](src/history.ts) | Shared-message projection, rendering, and deduplication |
 | [src/session-ui.ts](src/session-ui.ts) | History pages and local session association |
-| [src/workspace-api.ts](src/workspace-api.ts) / [src/workspace-schema.ts](src/workspace-schema.ts) | Validated native reads, creation, and file APIs |
+| [src/workspace-api.ts](src/workspace-api.ts) / [src/workspace-schema.ts](src/workspace-schema.ts) | Validated native reads and creation |
 | [src/workspace-socket.ts](src/workspace-socket.ts) / [src/workspace-state.ts](src/workspace-state.ts) | Authenticated Node WebSocket, replay, canonical inputs, permissions |
 | [src/drawers.ts](src/drawers.ts) / [src/workspace-ui.ts](src/workspace-ui.ts) | Responsive searchable settings and session navigation |
-| [src/changes.ts](src/changes.ts) | Saved/live file review and unified text diffs |
 | [src/interactions.ts](src/interactions.ts) | Approval, question, model, and inbox dialogs |
 | [src/remote.ts](src/remote.ts) | Manual-shell connection, output limits, cancellation, and cleanup |
 
@@ -171,7 +170,6 @@ uses published protocol dependencies and has no monorepo dependency.
 | Native workspace identity and defaults | `/api/workspaces/...`, `/api/users`, `/api/channels` |
 | Native session metadata and access | `/api/sessions/:id/bootstrap` |
 | Native creation and replay | `/ws?workspaceId=...&client=terminal` |
-| File review | `/api/sessions/:id/file-sources`, `/live-file-status`, `/files/read` |
 | Device-token renewal | `/api/cli/auth/refresh` |
 
 HTTP requests carry a bearer token and workspace header. The terminal socket
@@ -187,7 +185,6 @@ response payloads are excluded from diagnostic text.
 - Composer drafts survive navigation in the running process, not a Pi restart. Unconfirmed setup payloads remain available for retries until the user leaves that creation draft.
 - Model knobs without an existing choices API inherit server defaults.
 - Session replay uses durable cursors.
-- File drawers observe and review changes; they do not publish them.
 - Local Pi skills and local model settings do not configure the hosted agent.
 - Custom question answers appear only when the server's form allows them.
 - Manual shell output is local to Pi; use a hosted prompt for shared command activity.

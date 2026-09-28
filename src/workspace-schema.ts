@@ -50,55 +50,6 @@ export const bootstrapSchema = z.object({
 	lastCursorIncluded: z.number(),
 	viewerCanWrite: z.boolean(),
 });
-export const fileChangeSchema = z.object({
-	path: z.string(),
-	oldPath: z.string().optional(),
-	state: z.string(),
-	patch: z.string().optional(),
-	additions: z.number().optional(),
-	deletions: z.number().optional(),
-});
-export const sourceSchema = z.object({
-	id: z.string(),
-	resourceId: z.string(),
-	kind: z.string(),
-	label: z.string(),
-	mountPath: z.string(),
-	candidateCommit: z.string().optional(),
-	baseCommit: z.string().optional(),
-	branch: z.string().optional(),
-	changes: z.array(fileChangeSchema),
-	updates: z.array(fileChangeSchema),
-	checkedAt: z.string().optional(),
-	error: z.string().optional(),
-	publication: z
-		.object({
-			state: z.string(),
-			url: z.string(),
-			number: z.number(),
-			draft: z.boolean().optional(),
-		})
-		.optional(),
-	publicationComparison: z
-		.object({ changes: z.array(fileChangeSchema) })
-		.optional(),
-});
-export const sourcesSchema = z.object({
-	sources: z.array(sourceSchema),
-	working: z.boolean(),
-	error: z.string().optional(),
-});
-export const liveFilesSchema = z.object({
-	available: z.boolean(),
-	files: z.array(fileChangeSchema),
-});
-export const fileReadSchema = z.object({
-	content: z.string().optional(),
-	isBinary: z.boolean(),
-	tooLarge: z.boolean(),
-	encoding: z.string(),
-});
-
 const eventBase = z.object({
 	type: z.string(),
 	cursor: z.number().optional(),
@@ -143,8 +94,6 @@ export type SessionInput = z.infer<typeof inputSchema>;
 export type WorkspaceMember = z.infer<typeof memberSchema>;
 export type Channel = z.infer<typeof channelSchema>;
 export type WorkspaceEvent = z.infer<typeof eventSchema>;
-export type FileSource = z.infer<typeof sourceSchema>;
-export type FileChange = z.infer<typeof fileChangeSchema>;
 export type SessionContext =
 	| { type: "none" }
 	| { type: "channel"; channelId: string };

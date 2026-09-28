@@ -19,7 +19,6 @@ import {
 	SessionClient,
 	type SessionInfo,
 } from "./api";
-import { changesDrawer, reviewChanges } from "./changes";
 import { resolveConnection } from "./config";
 import { chooseDrawer, drawerContext, textDrawer } from "./drawers";
 import {
@@ -97,7 +96,6 @@ export default function leverage(pi: ExtensionAPI): void {
 	let draftError: string | undefined;
 	let creating = false;
 	let pendingCreation: Prompt | undefined;
-	let changeSummary = "Checking changes…";
 	let draftContext = "Standalone";
 	let attachment: AbortController | undefined;
 	let composerKey: string | undefined;
@@ -129,8 +127,6 @@ export default function leverage(pi: ExtensionAPI): void {
 		const value = pi.getFlag(`leverage-${name}`);
 		return typeof value === "string" ? value : undefined;
 	};
-	const describeChanges = (count: number, note: string) =>
-		`${count === 0 ? "No file changes" : count === 1 ? "1 changed file" : `${count} changed files`}${note ? " (partial)" : ""}`;
 	const status = (ctx: ExtensionContext) => {
 		ctx.ui.setStatus(
 			"leverage",
@@ -166,7 +162,6 @@ export default function leverage(pi: ExtensionAPI): void {
 									["F2", "Model"],
 									["F3", "Sessions"],
 									["F4", "Approvals"],
-									["F5", "Changes"],
 								]
 							: [["F3", "Sessions"]],
 					),
@@ -186,18 +181,14 @@ export default function leverage(pi: ExtensionAPI): void {
 									? paint("warning", "● Working · Esc to stop")
 									: paint("success", "● Ready")
 						}`,
-						...[
-							[
-								shared && !shared.canWrite
-									? "Read-only · ask the owner for collaborator access"
-									: "",
-								changeSummary,
-							]
-								.filter(Boolean)
-								.join(" · "),
-						]
-							.filter(Boolean)
-							.map((line) => paint("dim", line)),
+						...(shared && !shared.canWrite
+							? [
+									paint(
+										"warning",
+										"Read-only · ask the owner for collaborator access",
+									),
+								]
+							: []),
 						...(approvals
 							? [
 									paint(
@@ -288,7 +279,6 @@ export default function leverage(pi: ExtensionAPI): void {
 		draftError = undefined;
 		creating = false;
 		pendingCreation = undefined;
-		changeSummary = "Checking changes…";
 		draftContext = "Standalone";
 		terminal?.close();
 		api?.close();
@@ -479,7 +469,6 @@ export default function leverage(pi: ExtensionAPI): void {
 			status(ctx);
 			redrawConversation();
 		};
-		let refreshFileStatus = () => {};
 		const initialSync = sync(ctx);
 		const repair = () => {
 			const pending = sync(ctx);
@@ -536,10 +525,8 @@ export default function leverage(pi: ExtensionAPI): void {
 							"session.inbox.delivered",
 							"session.inbox.cancelled",
 						].includes(event.type)
-					) {
+					)
 						repair();
-						refreshFileStatus();
-					}
 					status(ctx);
 				},
 			})
@@ -556,33 +543,6 @@ export default function leverage(pi: ExtensionAPI): void {
 			});
 		await initialSync;
 		completeAttach();
-		let refreshingChanges = false;
-		const refreshChanges = () => {
-			if (refreshingChanges || signal.aborted) return;
-			refreshingChanges = true;
-			void reviewChanges(workspace!, session.id, signal)
-				.then((review) => {
-					if (opening === generation) {
-						changeSummary = describeChanges(review.files.length, review.note);
-						status(ctx);
-					}
-				})
-				.catch(() => {
-					if (opening === generation) {
-						changeSummary = "Changes unavailable";
-						status(ctx);
-					}
-				})
-				.finally(() => {
-					refreshingChanges = false;
-				});
-		};
-		refreshFileStatus = refreshChanges;
-		refreshChanges();
-		const timer = setInterval(refreshChanges, 15_000);
-		signal.addEventListener("abort", () => clearInterval(timer), {
-			once: true,
-		});
 	};
 	const switchTo = async (
 		session: SessionInfo,
@@ -965,7 +925,7 @@ export default function leverage(pi: ExtensionAPI): void {
 	});
 	pi.registerCommand("leverage", {
 		description:
-			"New, sessions, settings, changes, approvals, history, stop, queue, model",
+			"New, sessions, settings, approvals, history, stop, queue, model",
 		handler: async (args, ctx) => {
 			const opening = generation;
 			dialogCount++;
@@ -1074,20 +1034,6 @@ export default function leverage(pi: ExtensionAPI): void {
 					}
 					return;
 				}
-				if (action === "changes") {
-					const { session, signal } = requireSession();
-					await changesDrawer(
-						workspace!,
-						ctx,
-						session.id,
-						signal,
-						(count, note) => {
-							changeSummary = describeChanges(count, note);
-							status(ctx);
-						},
-					);
-					return;
-				}
 				if (
 					action === "approvals" ||
 					action === "questions" ||
@@ -1173,7 +1119,6 @@ export default function leverage(pi: ExtensionAPI): void {
 		["f2", "settings model"],
 		["f3", "sessions"],
 		["f4", "approvals"],
-		["f5", "changes"],
 	] as const)
 		pi.registerShortcut(key, {
 			description: `Leverage ${action}`,

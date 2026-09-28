@@ -260,10 +260,6 @@ export async function textDrawer(
 	title: string,
 	read: () => string,
 	signal: AbortSignal,
-	options: {
-		subtitle?: () => string;
-		format?: (text: string, width: number) => string[];
-	} = {},
 ): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify(clean(read()), "info");
@@ -281,17 +277,8 @@ export async function textDrawer(
 			return {
 				render(width) {
 					const inner = Math.max(1, width - 4);
-					const text = clean(read());
-					const lines = options.format
-						? options.format(text, inner)
-						: wrap(text, inner);
-					const subtitle = options.subtitle
-						? [theme.fg("dim", fit(clean(options.subtitle()), inner)), ""]
-						: [];
-					height = Math.max(
-						3,
-						Math.floor(tui.terminal.rows * 0.95) - subtitle.length - 4,
-					);
+					const lines = wrap(clean(read()), inner);
+					height = Math.max(3, Math.floor(tui.terminal.rows * 0.95) - 4);
 					max = Math.max(0, lines.length - height);
 					offset = Math.min(offset, max);
 					return frame(
@@ -299,7 +286,6 @@ export async function textDrawer(
 						width,
 						clean(title),
 						[
-							...subtitle,
 							...lines.slice(offset, offset + height),
 							"",
 							keyHints(theme, [

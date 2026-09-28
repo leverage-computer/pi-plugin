@@ -65,7 +65,6 @@ sharing, invitations, and presence stay in the Leverage web app.
 | `/leverage sessions <text>` | Search session titles |
 | `/leverage new <title>` | Open a local draft; create the session on first submission |
 | `/leverage settings` / F1–F2 | The new session's channel, and its model and effort |
-| `/leverage changes` / F5 | Changed files, line counts, renames, and unified diffs |
 | `/leverage open <id>` | Open a task by ID |
 | `/leverage history` | Scroll through history and older/newer pages |
 | `/leverage stop` | Stop the shared agent turn |
@@ -117,12 +116,9 @@ Viewers can inspect tool requests but cannot send prompts or decide them. Tool
 approval also follows Leverage's separate tool policy. Role changes apply live
 and revocation closes the affected view.
 
-The activity strip shows the agent's state, changed files, waiting approvals,
-and read-only access. A key bar under the composer lists the function keys for
-the current view. Changes uses the existing file-source, live-status,
-and file-read APIs. Saved changes and live edits share a file entry, with real
-line counts and scrollable diffs; binary or unavailable data is labeled.
-Opening a drawer never approves a request or publishes files.
+The activity strip shows the agent's state, waiting approvals, and read-only
+access. A key bar under the composer lists the function keys for the current
+view. Opening a drawer never approves a request.
 
 ## Shared conversation
 
