@@ -191,6 +191,42 @@ describe("Leverage shared interactions", () => {
 		]);
 	});
 
+	test("closes cleanly when resolution arrives before the decision HTTP response", async () => {
+		let posted!: () => void;
+		const accepted = new Promise<void>((resolve) => {
+			posted = resolve;
+		});
+		let release!: () => void;
+		const delayed = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { pending, state } = fixture(
+			{ select: async () => "Approve once" },
+			async (request) => {
+				if (request.method === "POST") {
+					posted();
+					await delayed;
+					return new Response(null, { status: 204 });
+				}
+				return Response.json({
+					data: request.url.endsWith("/permission") ? [permission] : [],
+				});
+			},
+		);
+		const showing = pending.show("approvals");
+		try {
+			await accepted;
+			pending.apply(replied());
+			await showing;
+			expect(pending.hasDialog).toBe(false);
+			expect(pending.approvalCount).toBe(0);
+			expect(state.writes).toHaveLength(1);
+			expect(state.notifications).toEqual([]);
+		} finally {
+			release();
+		}
+	});
+
 	test.each([
 		"approvals",
 		"questions",

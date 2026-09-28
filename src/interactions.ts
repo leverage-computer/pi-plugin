@@ -466,6 +466,8 @@ export class PendingInteractions {
 				if (!current) return;
 				await this.question(current, signal);
 			}
+		} catch (error) {
+			if (!signal.aborted) throw error;
 		} finally {
 			if (this.active === active) this.active = undefined;
 		}
