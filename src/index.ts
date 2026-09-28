@@ -149,7 +149,7 @@ export default function leverage(pi: ExtensionAPI): void {
 		return typeof value === "string" ? value : undefined;
 	};
 	const describeChanges = (count: number, note: string) =>
-		`${count === 1 ? "1 changed file" : `${count} changed files`}${note ? " (partial)" : ""}`;
+		`${count === 0 ? "No file changes" : count === 1 ? "1 changed file" : `${count} changed files`}${note ? " (partial)" : ""}`;
 	const status = (ctx: ExtensionContext) => {
 		ctx.ui.setStatus(
 			"leverage",

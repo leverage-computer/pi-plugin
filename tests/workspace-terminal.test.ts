@@ -117,6 +117,21 @@ test("wide Pi terminal changes sharing with F3 and returns the untouched draft w
 	expect(ui.f.requests.some((r) => r.method !== "GET")).toBe(false);
 }, 45000);
 
+test("choosing the current provider keeps the model picked with F2", async () => {
+	const ui = await terminal(120);
+	await ui.key("\x1bOQ");
+	await ui.wait("Leverage model");
+	await ui.key("Hosted\r");
+	await ui.wait("Reasoning effort");
+	await ui.key("high\r");
+	await ui.wait("Model hosted-model · high");
+	await ui.key("\x1b[15~");
+	await ui.wait("Hosted provider");
+	await ui.key("Claude\r");
+	await ui.key("\x1bOQ");
+	await ui.wait("Hosted model ✓");
+}, 45000);
+
 test("narrow Pi terminal sends a channel message and thread reply, then restores the session draft", async () => {
 	const ui = await terminal(64);
 	await ui.key("My session draft");

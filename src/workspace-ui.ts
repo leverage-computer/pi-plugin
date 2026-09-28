@@ -279,9 +279,11 @@ export async function editDraft(
 				],
 				signal,
 			);
-			if (picked) {
-				draft.providerFamily =
-					picked === "codex" || picked === "claude_code" ? picked : undefined;
+			const family =
+				picked === "codex" || picked === "claude_code" ? picked : undefined;
+			// A model belongs to one provider, so only a new provider clears it.
+			if (picked && family !== draft.providerFamily) {
+				draft.providerFamily = family;
 				draft.model = undefined;
 				draft.reasoningEffort = undefined;
 			}
