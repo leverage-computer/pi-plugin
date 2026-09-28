@@ -48,6 +48,7 @@ To update this package, run `pi update git:github.com/thepresciencecompany/pi-pl
 
 Pi registers a display-only Leverage model; no Pi `/login` is required.
 The selected hosted model comes from the Leverage settings drawer.
+For a pinned composer and activity strip, launch `pi --tui-mode fullscreen`.
 
 ## Session controls
 
