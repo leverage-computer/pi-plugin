@@ -50,49 +50,6 @@ export const bootstrapSchema = z.object({
 	lastCursorIncluded: z.number(),
 	viewerCanWrite: z.boolean(),
 });
-export const messageSchema = z.object({
-	id: z.string(),
-	channelId: z.string(),
-	content: z.string(),
-	createdAt: z.string(),
-	authorId: z.string().nullable(),
-	authorName: z.string().nullable().optional(),
-	parentMessageId: z.string().nullable().optional(),
-	topLevelSeq: z.number().nullable().optional(),
-	clientMessageId: z.string().nullable().optional(),
-	harness: z.string().nullable().optional(),
-	sessionId: z.string().nullable().optional(),
-	isAi: z.boolean().optional(),
-	threadSummary: z.object({ replyCount: z.number() }).nullable().optional(),
-	attachments: z.array(z.object({ filename: z.string() })).optional(),
-});
-export const timelineSchema = z.object({
-	messages: z.array(messageSchema),
-	hasMoreOlder: z.boolean(),
-	nextBeforeSeq: z.number().nullable(),
-	lastCursorIncluded: z.number(),
-});
-export const readStateSchema = z.object({
-	channelId: z.string(),
-	unreadCount: z.number(),
-});
-export const repoSchema = z.object({
-	id: z.string(),
-	fullName: z.string(),
-	connectionStatus: z.string(),
-	defaultBranch: z.string().nullable().optional(),
-});
-export const grantSchema = z.object({
-	principalType: z.enum(["user", "channel"]),
-	principalId: z.string(),
-	role: z.enum(["viewer", "collaborator"]),
-});
-export const sharingSchema = z.object({
-	members: z.array(grantSchema.extend({ name: z.string().optional() })),
-	ownerId: z.string(),
-	visibility: visibilitySchema,
-	includePersonalKnowledge: z.boolean().optional(),
-});
 export const fileChangeSchema = z.object({
 	path: z.string(),
 	oldPath: z.string().optional(),
@@ -142,11 +99,6 @@ export const fileReadSchema = z.object({
 	encoding: z.string(),
 });
 
-const viewerSchema = z.object({
-	userId: z.string(),
-	userName: z.string(),
-	state: z.enum(["active", "idle"]).optional(),
-});
 const eventBase = z.object({
 	type: z.string(),
 	cursor: z.number().optional(),
@@ -184,86 +136,24 @@ export const eventSchema = z.discriminatedUnion("type", [
 		type: z.literal("session.access_revoked"),
 		sessionId: z.string(),
 	}),
-	eventBase.extend({
-		type: z.literal("session.presence.snapshot"),
-		sessionId: z.string(),
-		viewers: z.array(viewerSchema),
-	}),
-	eventBase.extend({
-		type: z.literal("session.presence.update"),
-		sessionId: z.string(),
-		viewer: viewerSchema,
-		active: z.boolean(),
-		state: z.enum(["active", "idle"]).optional(),
-	}),
-	eventBase.extend({
-		type: z.literal("session.typing.snapshot"),
-		sessionId: z.string(),
-		users: z.array(viewerSchema),
-	}),
-	eventBase.extend({
-		type: z.literal("session.typing.update"),
-		sessionId: z.string(),
-		userId: z.string(),
-		userName: z.string(),
-		active: z.boolean(),
-	}),
-	eventBase.extend({
-		type: z.literal("message.created"),
-		message: messageSchema,
-	}),
-	eventBase.extend({
-		type: z.literal("message.content.updated"),
-		channelId: z.string(),
-		messageId: z.string(),
-		content: z.string(),
-	}),
-	eventBase.extend({
-		type: z.literal("message.deleted"),
-		channelId: z.string(),
-		messageId: z.string(),
-	}),
-	eventBase.extend({
-		type: z.literal("message.delta"),
-		channelId: z.string(),
-		messageId: z.string(),
-		delta: z.string(),
-		offset: z.number().optional(),
-	}),
-	eventBase.extend({
-		type: z.literal("typing.update"),
-		channelId: z.string(),
-		userId: z.string(),
-		userName: z.string(),
-		active: z.boolean(),
-		parentMessageId: z.string().nullable().optional(),
-	}),
 ]);
 
 export type WorkspaceSession = z.infer<typeof sessionSchema>;
 export type SessionInput = z.infer<typeof inputSchema>;
 export type WorkspaceMember = z.infer<typeof memberSchema>;
 export type Channel = z.infer<typeof channelSchema>;
-export type ChannelMessage = z.infer<typeof messageSchema>;
-export type SessionGrant = z.infer<typeof grantSchema>;
 export type WorkspaceEvent = z.infer<typeof eventSchema>;
 export type FileSource = z.infer<typeof sourceSchema>;
 export type FileChange = z.infer<typeof fileChangeSchema>;
-export type Viewer = z.infer<typeof viewerSchema>;
 export type SessionContext =
 	| { type: "none" }
-	| { type: "repo"; repoConnectionId: string; branch?: string }
 	| { type: "channel"; channelId: string };
 export interface SessionDraft {
 	requestId: string;
 	context: SessionContext;
-	visibility: "private" | "workspace";
 	providerFamily?: z.infer<typeof familySchema>;
 	model?: string;
 	reasoningEffort?: string;
-	mode: "plan" | "yolo";
-	includePersonalKnowledge: boolean;
-	grants: SessionGrant[];
 	title?: string;
 	sessionId?: string;
 }

@@ -189,8 +189,6 @@ function serverFixture(
 				return Response.json({ settings: [] });
 			if (path.endsWith("/provider-access/availability"))
 				return Response.json({ claude_code: true, codex: false });
-			if (path.endsWith("/session-sharing-defaults"))
-				return Response.json({ defaultVisibility: "private" });
 			if (path.endsWith("/file-sources"))
 				return Response.json({ sources: [], working: false });
 			if (path.endsWith("/live-file-status"))

@@ -39,10 +39,9 @@ you can instead supply `LEVERAGE_HOST`, `LEVERAGE_WORKSPACE`, and `LEVERAGE_TOKE
 through your environment. See the connection settings below.
 
 Pi opens its normal empty composer. Above it, each draft setting shows its
-current value next to its key: F1 context, F2 model, F3 sharing, F4 people, and
-F5 provider. Press F6 to open a session, or F7 to browse channels. Type
-normally to send a shared message. Everyone viewing that task can see your
-message and the agent's answer.
+current value next to its key: F1 for the channel and F2 for the model. Press F3
+to open a session. Type normally to send a shared message. Everyone viewing
+that task can see your message and the agent's answer.
 Messages from the web app or another Pi client appear in the same conversation.
 Opening a session reads its state without starting compute or an agent turn.
 
@@ -55,6 +54,9 @@ For a pinned composer and activity strip, launch `pi --tui-mode fullscreen`.
 To hide Pi's startup list of loaded resources, set `"quietStartup": true` in
 Pi's `settings.json`.
 
+The plugin offers what the Codex and OpenCode clients offer. Channel chat,
+sharing, invitations, and presence stay in the Leverage web app.
+
 ## Session controls
 
 | Command | Action |
@@ -62,16 +64,14 @@ Pi's `settings.json`.
 | `/leverage` | Browse, search, and open sessions |
 | `/leverage sessions <text>` | Search session titles |
 | `/leverage new <title>` | Open a local draft; create the session on first submission |
-| `/leverage settings` / F1–F5 | Context, branch, provider/model/effort, mode, knowledge, sharing |
-| `/leverage channels` / F7 | Search channels, read messages, reply in threads, open sessions |
-| `/leverage share` | Visibility, copy link, invite people/channels, change or revoke roles |
-| `/leverage changes` / F8 | Changed files, line counts, renames, and unified diffs |
+| `/leverage settings` / F1–F2 | The new session's channel, and its model and effort |
+| `/leverage changes` / F5 | Changed files, line counts, renames, and unified diffs |
 | `/leverage open <id>` | Open a task by ID |
 | `/leverage history` | Scroll through history and older/newer pages |
 | `/leverage stop` | Stop the shared agent turn |
 | `/leverage queue <message>` | Queue a message for the next turn |
 | `/leverage inbox` | Inspect waiting messages and take back a queued message |
-| `/leverage approvals` / F9 | Inspect pending requests, decide, and view recent decisions |
+| `/leverage approvals` / F4 | Inspect pending requests, decide, and view recent decisions |
 | `/leverage questions` | Answer pending questions and approval scope forms |
 | `/leverage model` | Choose the session's hosted model and reasoning effort |
 | `/leverage compact` | Ask Leverage to compact the shared context |
@@ -103,34 +103,23 @@ A check mark shows the current choice. When a row does not fit, its full text
 shows under the list. The main composer and attachment paths survive drawers.
 Session drafts stay scoped to the remote session while Pi is open.
 
-A new session's repository, channel, and standalone context are mutually
-exclusive. Repositories, branches, hosted models, effort choices, provider
-health, and defaults come from Leverage and are checked again on submission.
-Advanced model settings with no exposed choice list keep the server defaults.
+A new session works in a channel or standalone, like a Codex project or an
+OpenCode folder. Channels, hosted models, effort choices, provider health, and
+defaults come from Leverage and are checked again on submission. Advanced model
+settings with no exposed choice list keep the server defaults.
 
-The first submission creates an **empty** session with a stable request ID,
-applies visibility and explicit grants, and confirms them before sending the
-prompt and attachments. `/leverage retry` continues that same setup after a
-failure. Drafts and retry payloads stay in memory; closing Pi discards them.
-Under a public workspace default, the empty session metadata can briefly be
-public before a private visibility change succeeds. No prompt is sent then.
+The first submission creates an **empty** session with a stable request ID, then
+sends the prompt and attachments. Leverage sets the session's visibility from
+its defaults. `/leverage retry` continues that same setup after a failure.
+Drafts and retry payloads stay in memory; closing Pi discards them.
 
-Public means **workspace link visibility**. Existing listing rules still apply;
-it does not automatically list the session for everyone or grant write access.
-Invite a person or channel as a viewer or collaborator through Share. Viewers
-can inspect tool requests but cannot send prompts or decide them. Tool approval
-also follows Leverage's separate tool policy. Role changes apply live and
-revocation closes the affected view.
+Viewers can inspect tool requests but cannot send prompts or decide them. Tool
+approval also follows Leverage's separate tool policy. Role changes apply live
+and revocation closes the affected view.
 
-Channels show unread counts and canonical participant names. Tab switches
-between the channel composer and message navigation; Enter on a message opens
-thread/session actions. F6 opens associated sessions; Up on the first message
-loads older messages.
-Channel and thread drafts are independent from the main conversation draft.
-
-The activity strip shows connection, agent, changed-file and approval state,
-active viewers, and typing. A key bar under the composer lists the function
-keys for the current view. Changes uses the existing file-source, live-status,
+The activity strip shows the agent's state, changed files, waiting approvals,
+and read-only access. A key bar under the composer lists the function keys for
+the current view. Changes uses the existing file-source, live-status,
 and file-read APIs. Saved changes and live edits share a file entry, with real
 line counts and scrollable diffs; binary or unavailable data is labeled.
 Opening a drawer never approves a request or publishes files.
@@ -185,7 +174,7 @@ migration.
 | Server | `--leverage-host` | `LEVERAGE_HOST` | Current CLI host |
 | Workspace | `--leverage-workspace` | `LEVERAGE_WORKSPACE` | Selected CLI workspace |
 | Task | `--leverage-session` | `LEVERAGE_SESSION` | Empty new-session composer |
-| Folder | `--leverage-directory` | `LEVERAGE_DIRECTORY` | Standalone; choose repository or channel in Settings |
+| Folder | `--leverage-directory` | `LEVERAGE_DIRECTORY` | Standalone; choose a channel with F1 |
 | Manual shell directory | `--leverage-cwd` | `LEVERAGE_CWD` | `/work` |
 | Access token | — | `LEVERAGE_TOKEN` | CLI login for the host |
 | Refresh token | — | `LEVERAGE_REFRESH_TOKEN` | CLI login for the host |

@@ -1,12 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
-import { ChannelConversation } from "../src/channels-ui";
-import {
-	eventually,
-	MEMBER,
-	SESSION,
-	workspaceFixture,
-} from "./workspace-fixture";
+import { eventually, SESSION, workspaceFixture } from "./workspace-fixture";
 
 const fixtures: ReturnType<typeof workspaceFixture>[] = [];
 afterEach(async () => {
@@ -18,43 +12,34 @@ function fixture(extra?: Parameters<typeof workspaceFixture>[0]) {
 	return value;
 }
 
-test("creation retries keep one empty session and confirm private grants before returning", async () => {
-	const f = fixture();
+test("a creation retry keeps the one empty session and finishes its title", async () => {
+	let failures = 1;
+	const f = fixture((request) =>
+		request.method === "PATCH" && failures-- > 0
+			? Response.json({ error: "Unavailable" }, { status: 503 })
+			: undefined,
+	);
 	const api = f.client();
 	const signal = new AbortController().signal;
-	const draft = await api.draft(signal);
-	draft.visibility = "private";
-	draft.title = "Private draft";
-	draft.grants.push({
-		principalType: "user",
-		principalId: MEMBER,
-		role: "collaborator",
-	});
-	f.state.visibilityFailures = 1;
+	const draft = api.draft();
+	draft.title = "Named draft";
 	await rejects(api.create(draft, signal), /503/);
 	expect(draft.sessionId).toBe(SESSION);
 	expect(f.state.createCount).toBe(1);
 	expect(f.requests.some((r) => r.path.includes("/inbox"))).toBe(false);
 	expect(await api.create(draft, signal)).toBe(SESSION);
 	expect(f.state.createCount).toBe(1);
-	expect((await api.sharing(SESSION)).members[0]?.role).toBe("collaborator");
+	expect(f.session.title).toBe("Named draft");
 	const create = f.frames.find((frame) => frame.type === "session.create")!;
 	expect(create.prompt).toBe("");
 	expect(create.title).toBeUndefined();
 	expect(create.attachments).toBeUndefined();
-	const mutating = f.requests.filter((r) => r.method !== "GET");
-	expect(mutating.map((r) => r.path.split("/").at(-1))).toEqual([
-		"visibility",
-		"visibility",
-		"members",
-		`ses_${SESSION}`,
-	]);
 });
 
 test("a lost creation acknowledgement retries the stable request ID without duplicating a session", async () => {
 	const f = fixture();
 	const api = f.client();
-	const draft = await api.draft();
+	const draft = api.draft();
 	f.state.dropCreated = true;
 	const life = new AbortController();
 	const attempt = api.create(draft, life.signal);
@@ -74,13 +59,13 @@ test("a lost creation acknowledgement retries the stable request ID without dupl
 	).toBe(1);
 });
 
-test("revalidates removed branches, unavailable providers, and unsupported reasoning before creating", async () => {
+test("revalidates removed channels, unavailable providers, and unsupported reasoning before creating", async () => {
 	const f = fixture();
 	const api = f.client();
-	const draft = await api.draft();
+	const draft = api.draft();
 	const signal = new AbortController().signal;
-	draft.context = { type: "repo", repoConnectionId: "repo", branch: "removed" };
-	await rejects(api.create(draft, signal), /branch/);
+	draft.context = { type: "channel", channelId: "removed" };
+	await rejects(api.create(draft, signal), /channel/);
 	draft.context = { type: "none" };
 	draft.providerFamily = "codex";
 	await rejects(api.create(draft, signal), /unavailable/);
@@ -108,65 +93,4 @@ test("both transports use the same refreshed credential and native responses are
 			: undefined,
 	);
 	await rejects(broken.client().members(), /invalid data/);
-});
-
-test("channel sends and thread replies retain distinct drafts and stable message identities", async () => {
-	const f = fixture();
-	const owner = f.client();
-	const member = f.client(MEMBER);
-	const signal = new AbortController().signal;
-	const root = new ChannelConversation();
-	root.draft = "Start a thread";
-	await root.send(owner, "general", signal);
-	const timeline = await member.timeline("general");
-	expect(timeline.messages).toHaveLength(1);
-	const message = timeline.messages[0];
-	const reply = new ChannelConversation();
-	reply.draft = "Bob's reply";
-	root.draft = "Unsent channel draft";
-	await reply.send(member, "general", signal, message.id);
-	const replies = await owner.thread("general", message.id);
-	expect(replies[0]?.authorId).toBe(MEMBER);
-	expect(replies[0]?.parentMessageId).toBe(message.id);
-	expect(root.draft).toBe("Unsent channel draft");
-	expect(reply.draft).toBe("");
-	await member.sendMessage(
-		"general",
-		"Bob's reply",
-		replies[0].clientMessageId!,
-		signal,
-		message.id,
-	);
-	expect(await owner.thread("general", message.id)).toHaveLength(1);
-	root.merge(timeline.messages);
-	root.merge(timeline.messages);
-	expect(root.entries()).toHaveLength(1);
-	root.reconcile([], true);
-	expect(root.entries()).toHaveLength(0);
-	expect(root.draft).toBe("Unsent channel draft");
-});
-
-test("a channel snapshot cannot restore a message deleted during refresh", () => {
-	const conversation = new ChannelConversation();
-	const message = {
-		id: "one",
-		channelId: "general",
-		authorId: MEMBER,
-		content: "Removed",
-		createdAt: new Date().toISOString(),
-	};
-	conversation.merge([message]);
-	const load = conversation.revision;
-	conversation.remove(message.id);
-	conversation.reconcile([message], true, load);
-	expect(conversation.entries()).toEqual([]);
-	conversation.merge([{ ...message, id: "two", content: "Live edit" }]);
-	const oldLoad = conversation.revision;
-	conversation.merge([{ ...message, id: "two", content: "Newer edit" }]);
-	conversation.reconcile(
-		[{ ...message, id: "two", content: "Live edit" }],
-		true,
-		oldLoad,
-	);
-	expect(conversation.entries()[0]?.content).toBe("Newer edit");
 });

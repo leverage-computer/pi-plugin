@@ -8,15 +8,9 @@ import {
 	fileReadSchema,
 	liveFilesSchema,
 	memberSchema,
-	messageSchema,
-	readStateSchema,
-	repoSchema,
 	type SessionDraft,
-	type SessionGrant,
 	sessionSchema,
-	sharingSchema,
 	sourcesSchema,
-	timelineSchema,
 } from "./workspace-schema";
 import { WorkspaceSocket } from "./workspace-socket";
 
@@ -114,13 +108,6 @@ export class WorkspaceClient {
 			signal,
 		);
 	}
-	async readStates(signal?: AbortSignal) {
-		return this.read(
-			`/api/read-state/channels?workspaceId=${id(await this.workspaceId(signal))}`,
-			z.array(readStateSchema),
-			signal,
-		);
-	}
 	async sessions(signal?: AbortSignal, archived = false) {
 		return this.read(
 			`/api/sessions${archived ? "/archived" : ""}?workspaceId=${id(await this.workspaceId(signal))}`,
@@ -135,97 +122,16 @@ export class WorkspaceClient {
 			signal,
 		);
 	}
-	sharing(sessionId: string, signal?: AbortSignal) {
-		return this.read(
-			`/api/sessions/${id(nativeId(sessionId))}/members`,
-			sharingSchema,
-			signal,
-		);
-	}
-	async visibility(
-		sessionId: string,
-		visibility: SessionDraft["visibility"],
-		signal?: AbortSignal,
-	): Promise<void> {
-		await this.transport.nativeJson(
-			`/api/sessions/${id(nativeId(sessionId))}/visibility`,
-			"PATCH",
-			signal,
-			{ visibility },
-		);
-	}
-	async grant(
-		sessionId: string,
-		member: SessionGrant,
-		signal?: AbortSignal,
-	): Promise<void> {
-		await this.transport.nativeJson(
-			`/api/sessions/${id(nativeId(sessionId))}/members`,
-			"POST",
-			signal,
-			member,
-		);
-	}
-	async revoke(
-		sessionId: string,
-		member: SessionGrant,
-		signal?: AbortSignal,
-	): Promise<void> {
-		await this.transport.nativeJson(
-			`/api/sessions/${id(nativeId(sessionId))}/members/${member.principalType}/${id(member.principalId)}`,
-			"DELETE",
-			signal,
-		);
-	}
-	async repos(signal?: AbortSignal) {
-		return (
-			await this.read(
-				`${await this.scope(signal)}/github/repos`,
-				z.object({ repos: z.array(repoSchema) }),
-				signal,
-			)
-		).repos;
-	}
-	async branches(repoId: string, signal?: AbortSignal) {
-		return (
-			await this.read(
-				`${await this.scope(signal)}/github/repos/${id(repoId)}/branches`,
-				z.object({
-					branches: z.array(
-						z.object({ name: z.string(), isDefault: z.boolean() }),
-					),
-				}),
-				signal,
-			)
-		).branches;
-	}
 	async defaults(signal?: AbortSignal) {
 		const scope = await this.scope(signal);
-		const [families, healthy, sharing] = await Promise.all([
+		const [families, healthy] = await Promise.all([
 			this.read(`${scope}/provider-family-settings`, familySettings, signal),
 			this.read(`${scope}/provider-access/availability`, availability, signal),
-			this.read(
-				`${scope}/session-sharing-defaults`,
-				z.object({ defaultVisibility: z.enum(["private", "workspace"]) }),
-				signal,
-			),
 		]);
-		return {
-			families: families.settings,
-			healthy,
-			visibility: sharing.defaultVisibility,
-		};
+		return { families: families.settings, healthy };
 	}
-	async draft(signal?: AbortSignal): Promise<SessionDraft> {
-		const defaults = await this.defaults(signal);
-		return {
-			requestId: randomUUID(),
-			context: { type: "none" },
-			mode: "yolo",
-			visibility: defaults.visibility,
-			grants: [],
-			includePersonalKnowledge: false,
-		};
+	draft(): SessionDraft {
+		return { requestId: randomUUID(), context: { type: "none" } };
 	}
 	async validateDraft(draft: SessionDraft, signal: AbortSignal): Promise<void> {
 		const [defaults, models] = await Promise.all([
@@ -233,24 +139,7 @@ export class WorkspaceClient {
 			this.transport.models(signal),
 		]);
 		let inherited: string | undefined;
-		if (draft.context.type === "repo") {
-			const repo = (await this.repos(signal)).find(
-				(one) =>
-					one.id ===
-					(draft.context.type === "repo" ? draft.context.repoConnectionId : ""),
-			);
-			if (!repo || repo.connectionStatus !== "connected")
-				throw new Error("Choose a connected repository.");
-			if (
-				draft.context.branch &&
-				!(await this.branches(repo.id, signal)).some(
-					(one) =>
-						one.name ===
-						(draft.context.type === "repo" ? draft.context.branch : ""),
-				)
-			)
-				throw new Error("The selected branch is no longer available.");
-		} else if (draft.context.type === "channel") {
+		if (draft.context.type === "channel") {
 			const channel = (await this.channels(signal)).find(
 				(one) =>
 					one.id ===
@@ -299,11 +188,9 @@ export class WorkspaceClient {
 					clientRequestId: draft.requestId,
 					prompt: "",
 					context: draft.context,
-					mode: draft.mode,
 					providerFamily: draft.providerFamily,
 					model: draft.model,
 					reasoningEffort: draft.reasoningEffort,
-					includePersonalKnowledge: draft.includePersonalKnowledge,
 					checkoutStrategy: "clone",
 					harness: "leverage/cli",
 				},
@@ -316,25 +203,6 @@ export class WorkspaceClient {
 				throw new Error("Session creation was not confirmed.");
 			draft.sessionId = event.session.id;
 		}
-		await this.visibility(draft.sessionId, draft.visibility, signal);
-		for (const grant of draft.grants)
-			await this.grant(draft.sessionId, grant, signal);
-		const sharing = await this.sharing(draft.sessionId, signal);
-		if (
-			sharing.visibility !== draft.visibility ||
-			draft.grants.some(
-				(wanted) =>
-					!sharing.members.some(
-						(one) =>
-							one.principalId === wanted.principalId &&
-							one.principalType === wanted.principalType &&
-							one.role === wanted.role,
-					),
-			)
-		)
-			throw new Error(
-				"Session access is not confirmed. The prompt has not been sent.",
-			);
 		if (draft.title)
 			await this.transport.rename(
 				`ses_${draft.sessionId}`,
@@ -342,59 +210,6 @@ export class WorkspaceClient {
 				signal,
 			);
 		return draft.sessionId;
-	}
-	timeline(channelId: string, before?: number | null, signal?: AbortSignal) {
-		return this.read(
-			`/api/channels/${id(channelId)}/timeline?limit=50${before == null ? "" : `&beforeSeq=${before}`}`,
-			timelineSchema,
-			signal,
-		);
-	}
-	async thread(channelId: string, rootId: string, signal?: AbortSignal) {
-		const result = await this.read(
-			`/api/channels/${id(channelId)}/messages/${id(rootId)}/thread`,
-			z.union([
-				z.array(messageSchema),
-				z.object({ messages: z.array(messageSchema) }),
-			]),
-			signal,
-		);
-		return Array.isArray(result) ? result : result.messages;
-	}
-	async sendMessage(
-		channelId: string,
-		content: string,
-		clientMessageId: string,
-		signal: AbortSignal,
-		parentMessageId?: string,
-	): Promise<void> {
-		const socket = await this.socket(signal);
-		await socket.request(
-			{
-				type: "message.send",
-				channelId,
-				content,
-				clientMessageId,
-				parentMessageId,
-			},
-			(event) =>
-				event.type === "message.created"
-					? event.message.clientMessageId === clientMessageId
-					: event.type === "error" && event.clientMessageId === clientMessageId,
-			signal,
-		);
-	}
-	async markRead(
-		channelId: string,
-		lastReadTopLevelSeq: number,
-		signal?: AbortSignal,
-	): Promise<void> {
-		await this.transport.nativeJson(
-			`/api/channels/${id(channelId)}/read`,
-			"POST",
-			signal,
-			{ lastReadTopLevelSeq },
-		);
 	}
 	sources(sessionId: string, signal?: AbortSignal) {
 		return this.read(
@@ -422,31 +237,6 @@ export class WorkspaceClient {
 			fileReadSchema,
 			signal,
 		);
-	}
-	async accessPreview(draft: SessionDraft, signal?: AbortSignal) {
-		return z
-			.object({
-				resources: z.array(
-					z.object({
-						kind: z.string(),
-						access: z.string(),
-						repositoryName: z.string().optional(),
-						branch: z.string().optional(),
-						mountPath: z.string(),
-					}),
-				),
-			})
-			.parse(
-				await this.transport.nativeJson(
-					`${await this.scope(signal)}/files/session-preview`,
-					"POST",
-					signal,
-					{
-						context: draft.context,
-						includePersonalKnowledge: draft.includePersonalKnowledge,
-					},
-				),
-			);
 	}
 	close(): void {
 		this.live?.close();

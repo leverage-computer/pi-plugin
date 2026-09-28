@@ -30,7 +30,7 @@ flowchart TB
         Terminal <--> Tools
     end
 
-    Plugin <-->|"Creation · identity · sharing · channels · files · presence"| Native
+    Plugin <-->|"Creation · identity · access · files"| Native
     Plugin -->|"Prompts · queue · questions · approvals"| API
     API -->|"History and live SSE events"| Plugin
     Plugin <-->|"Manual ! / !! · WebSocket"| Terminal
@@ -43,7 +43,9 @@ Leverage provides the hosted model and agent credentials. Pi renders reported
 tool activity without executing those tool calls locally.
 
 The web app and OpenCode share the same underlying sessions. The web app keeps
-its existing transport; it does not need to use the OpenCode adapter.
+its existing transport; it does not need to use the OpenCode adapter. The
+plugin offers the features the Codex and OpenCode clients offer. Channel chat,
+sharing, invitations, and presence stay in the web app.
 
 ## What each side owns
 
@@ -85,7 +87,7 @@ sequenceDiagram
 The event stream covers the workspace. The plugin filters it for the selected
 session. The OpenCode stream reconnects with refreshed snapshots. The native WebSocket
 resubscribes with per-session replay cursors, drops duplicate durable events,
-and refreshes bootstrap/channel snapshots. Version checks retain newer live
+and refreshes bootstrap snapshots. Version checks retain newer live
 author metadata, and per-view abort signals discard stale requests. A startup read failure is reported once. A later successful
 synchronization restores input readiness.
 
@@ -95,18 +97,15 @@ Pi leaves the hosted task running. Escape while the session is working, or
 
 ## Sending a prompt
 
-1. The local draft keeps text, attachments, context, model settings, and grants.
+1. The local draft keeps text, attachments, the channel, and model settings.
 2. On first submission, a stable request ID creates an empty native session.
-3. Visibility and grants are applied and read back before any prompt is sent.
-4. Pi creates a stable message ID and sends text and optional images.
-5. The API acknowledges the shared inbox item. That acknowledgement is not the agent's answer.
-6. Leverage schedules or steers the hosted agent according to the requested delivery mode.
-7. History and live events supply the answer, tool activity, and status changes to clients.
+3. Pi creates a stable message ID and sends text and optional images.
+4. The API acknowledges the shared inbox item. That acknowledgement is not the agent's answer.
+5. Leverage schedules or steers the hosted agent according to the requested delivery mode.
+6. History and live events supply the answer, tool activity, and status changes to clients.
 
-The agreed empty-placeholder behavior lets empty metadata briefly inherit a
-public workspace default before private access is applied. Public access means
-workspace link readability, with explicit collaborator grants and existing
-listing rules. Creation failures keep the native ID and unsent payload in memory.
+Leverage sets the new session's visibility from its defaults. Creation failures
+keep the native ID and unsent payload in memory.
 
 If a send is not confirmed, `/leverage retry` reuses its message ID. The plugin
 does not automatically replay a mutation after a network error or fall through
@@ -151,10 +150,9 @@ if the connection or terminal startup fails.
 | [src/api.ts](src/api.ts) | HTTP requests, contract validation, token renewal, and SSE |
 | [src/history.ts](src/history.ts) | Shared-message projection, rendering, and deduplication |
 | [src/session-ui.ts](src/session-ui.ts) | History pages and local session association |
-| [src/workspace-api.ts](src/workspace-api.ts) / [src/workspace-schema.ts](src/workspace-schema.ts) | Validated native reads, creation, grants, and file APIs |
-| [src/workspace-socket.ts](src/workspace-socket.ts) / [src/workspace-state.ts](src/workspace-state.ts) | Authenticated Node WebSocket, replay, canonical inputs, permissions, presence |
-| [src/drawers.ts](src/drawers.ts) / [src/workspace-ui.ts](src/workspace-ui.ts) | Responsive searchable settings, session navigation, and sharing |
-| [src/channels-ui.ts](src/channels-ui.ts) | Channel/thread timelines, scoped drafts, live messages |
+| [src/workspace-api.ts](src/workspace-api.ts) / [src/workspace-schema.ts](src/workspace-schema.ts) | Validated native reads, creation, and file APIs |
+| [src/workspace-socket.ts](src/workspace-socket.ts) / [src/workspace-state.ts](src/workspace-state.ts) | Authenticated Node WebSocket, replay, canonical inputs, permissions |
+| [src/drawers.ts](src/drawers.ts) / [src/workspace-ui.ts](src/workspace-ui.ts) | Responsive searchable settings and session navigation |
 | [src/changes.ts](src/changes.ts) | Saved/live file review and unified text diffs |
 | [src/interactions.ts](src/interactions.ts) | Approval, question, model, and inbox dialogs |
 | [src/remote.ts](src/remote.ts) | Manual-shell connection, output limits, cancellation, and cleanup |
@@ -171,9 +169,8 @@ uses published protocol dependencies and has no monorepo dependency.
 | Session terminal creation | `/api/opencode/api/experimental/session/:id/terminal` |
 | Terminal ticket and connection | `/api/opencode/api/experimental/persistent-pty/:id/...` |
 | Native workspace identity and defaults | `/api/workspaces/...`, `/api/users`, `/api/channels` |
-| Native session metadata and sharing | `/api/sessions/:id/bootstrap`, `/members`, `/visibility` |
-| Channel timelines and threads | `/api/channels/:id/timeline`, `/messages/:id/thread` |
-| Native creation and presence | `/ws?workspaceId=...&client=terminal` |
+| Native session metadata and access | `/api/sessions/:id/bootstrap` |
+| Native creation and replay | `/ws?workspaceId=...&client=terminal` |
 | File review | `/api/sessions/:id/file-sources`, `/live-file-status`, `/files/read` |
 | Device-token renewal | `/api/cli/auth/refresh` |
 
@@ -189,7 +186,7 @@ response payloads are excluded from diagnostic text.
 - Session forks, reverts, and deletion are not offered by this integration.
 - Composer drafts survive navigation in the running process, not a Pi restart. Unconfirmed setup payloads remain available for retries until the user leaves that creation draft.
 - Model knobs without an existing choices API inherit server defaults.
-- Channel reconnect uses timeline snapshots; session replay uses durable cursors.
+- Session replay uses durable cursors.
 - File drawers observe and review changes; they do not publish them.
 - Local Pi skills and local model settings do not configure the hosted agent.
 - Custom question answers appear only when the server's form allows them.

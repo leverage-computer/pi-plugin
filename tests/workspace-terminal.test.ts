@@ -99,69 +99,28 @@ async function terminal(
 		child.stdin.write(text);
 		await Bun.sleep(80);
 	};
-	await wait("Sharing Public", 30000);
+	await wait("Context Standalone", 30000);
 	return { f, wait, key, output: () => output };
 }
 
-test("wide Pi terminal changes sharing with F3 and returns the untouched draft without creating a session", async () => {
-	const ui = await terminal(120);
+test("narrow Pi terminal sets the channel with F1 and the model with F2, keeping the draft and creating nothing", async () => {
+	const ui = await terminal(64);
 	await ui.key("Keep this draft /tmp/attachment.png");
-	await ui.key("\x1bOR");
-	await ui.wait("Session visibility");
-	await ui.key("Private\r");
-	await ui.wait("Sharing Private");
-	// Typing redraws the composer line, which shows the kept draft.
-	await ui.key("!");
-	await ui.wait("Keep this draft /tmp/attachment.png!");
-	expect(ui.f.state.createCount).toBe(0);
-	expect(ui.f.requests.some((r) => r.method !== "GET")).toBe(false);
-}, 45000);
-
-test("choosing the current provider keeps the model picked with F2", async () => {
-	const ui = await terminal(120);
+	await ui.key("\x1bOP");
+	await ui.wait("Session context");
+	await ui.key("general\r");
+	await ui.wait("Context #general");
 	await ui.key("\x1bOQ");
 	await ui.wait("Leverage model");
 	await ui.key("Hosted\r");
 	await ui.wait("Reasoning effort");
 	await ui.key("high\r");
 	await ui.wait("Model hosted-model · high");
-	await ui.key("\x1b[15~");
-	await ui.wait("Hosted provider");
-	await ui.key("Claude\r");
-	await ui.key("\x1bOQ");
-	await ui.wait("Hosted model ✓");
-}, 45000);
-
-test("narrow Pi terminal sends a channel message and thread reply, then restores the session draft", async () => {
-	const ui = await terminal(64);
-	await ui.key("My session draft");
-	await ui.key("\x1b[18~");
-	await ui.wait("Leverage channels");
-	await ui.key("general\r");
-	await ui.wait("#general");
-	await ui.key("Terminal channel message\r");
-	await ui.wait("Terminal channel message");
-	for (let i = 0; i < 200 && ui.f.state.channelMessages.length < 1; i++)
-		await Bun.sleep(10);
-	expect(ui.f.state.channelMessages).toHaveLength(1);
-	await ui.key("\t\r");
-	await ui.wait("Open thread / reply");
-	await ui.key("\r");
-	await ui.wait("/ Thread");
-	await ui.key("Terminal thread reply\r");
-	for (let i = 0; i < 200 && ui.f.state.channelMessages.length < 2; i++)
-		await Bun.sleep(10);
-	expect(ui.f.state.channelMessages[1]?.parentMessageId).toBe(
-		ui.f.state.channelMessages[0]?.id,
-	);
-	await ui.key("\x1b");
-	await ui.wait("#general");
-	await ui.key("\x1b");
-	await ui.wait("Leverage channels");
-	await ui.key("\x1b");
+	// Typing redraws the composer line, which shows the kept draft.
 	await ui.key("!");
-	await ui.wait("My session draft!");
+	await ui.wait("Keep this draft /tmp/attachment.png!");
 	expect(ui.f.state.createCount).toBe(0);
+	expect(ui.f.requests.some((r) => r.method !== "GET")).toBe(false);
 }, 45000);
 
 test("switching real Pi sessions restores each destination's composer draft", async () => {
@@ -224,17 +183,17 @@ test("switching real Pi sessions restores each destination's composer draft", as
 			});
 		}
 	});
-	await ui.key(`\x1b[17~`);
+	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("First session\r");
 	await ui.wait("First session  ● Ready");
 	await ui.key("First unsent draft /tmp/attachment.png");
-	await ui.key(`\x1b[17~`);
+	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("Second session\r");
 	await ui.wait("Second session  ● Ready");
 	await ui.key("Second unsent draft");
-	await ui.key(`\x1b[17~`);
+	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("First session\r");
 	await ui.wait("First session  ● Ready");
@@ -242,7 +201,7 @@ test("switching real Pi sessions restores each destination's composer draft", as
 	expect(
 		ui.output().slice(ui.output().lastIndexOf("First session  ● Ready")),
 	).not.toContain("Second unsent draft");
-	await ui.key(`\x1b[17~`);
+	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("Second session\r");
 	await ui.wait("Second session  ● Ready");

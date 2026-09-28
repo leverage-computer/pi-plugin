@@ -20,7 +20,6 @@ import {
 	type SessionInfo,
 } from "./api";
 import { changesDrawer, reviewChanges } from "./changes";
-import { type ChannelConversation, channelsDrawer } from "./channels-ui";
 import { resolveConnection } from "./config";
 import { chooseDrawer, drawerContext, textDrawer } from "./drawers";
 import {
@@ -41,13 +40,7 @@ import {
 import { WorkspaceClient } from "./workspace-api";
 import type { SessionDraft } from "./workspace-schema";
 import { SharedSession } from "./workspace-state";
-import {
-	contextName,
-	editDraft,
-	sessionsDrawer,
-	shareSession,
-	visibilityName,
-} from "./workspace-ui";
+import { contextName, editDraft, sessionsDrawer } from "./workspace-ui";
 
 type Prompt = {
 	id: string;
@@ -56,20 +49,10 @@ type Prompt = {
 	delivery: "steer" | "queue";
 };
 
-// F1-F5 open these draft settings directly.
-const SETTING_SECTIONS = [
-	"context",
-	"model",
-	"visibility",
-	"members",
-	"provider",
-] as const;
+// F1 and F2 open these draft settings directly.
+const SETTING_SECTIONS = ["context", "model"] as const;
 // Pi creates a new extension instance when it switches sessions.
 const composerDrafts = new Map<string, string>();
-const workspaceConversations = new Map<
-	string,
-	Map<string, ChannelConversation>
->();
 let nextDraft: Partial<SessionDraft> | undefined;
 
 export default function leverage(pi: ExtensionAPI): void {
@@ -117,7 +100,6 @@ export default function leverage(pi: ExtensionAPI): void {
 	let changeSummary = "Checking changes…";
 	let draftContext = "Standalone";
 	let attachment: AbortController | undefined;
-	let conversations = new Map<string, ChannelConversation>();
 	let composerKey: string | undefined;
 	let editorInstalled = false;
 	let redrawConversation = () => {};
@@ -142,7 +124,6 @@ export default function leverage(pi: ExtensionAPI): void {
 	let refresh: Promise<void> | undefined;
 	let refreshRequested = false;
 	let dialogCount = 0;
-	let channelView = false;
 	const displayed = new Set<string>();
 	const flag = (name: string) => {
 		const value = pi.getFlag(`leverage-${name}`);
@@ -161,12 +142,6 @@ export default function leverage(pi: ExtensionAPI): void {
 						: "Leverage: connecting",
 			),
 		);
-		// The channel screen has its own header and key hints.
-		if (channelView) {
-			ctx.ui.setWidget("leverage-session", undefined);
-			ctx.ui.setWidget("leverage-keys", undefined);
-			return;
-		}
 		// Other modes forward widget text, so only the terminal gets colors.
 		const theme = ctx.mode === "tui" ? ctx.ui.theme : undefined;
 		const paint = (color: ThemeColor, value: string, bold = false) => {
@@ -189,25 +164,17 @@ export default function leverage(pi: ExtensionAPI): void {
 							? [
 									["F1", "Details"],
 									["F2", "Model"],
-									["F3", "Share"],
-									["F6", "Sessions"],
-									["F7", "Channels"],
-									["F8", "Changes"],
-									["F9", "Approvals"],
+									["F3", "Sessions"],
+									["F4", "Approvals"],
+									["F5", "Changes"],
 								]
-							: [
-									["F6", "Sessions"],
-									["F7", "Channels"],
-								],
+							: [["F3", "Sessions"]],
 					),
 				],
 				{ placement: "belowEditor" },
 			);
 		const approvals = interactions?.approvalCount ?? 0;
 		const questions = interactions?.questionCount ?? 0;
-		const typing = [...(shared?.typing ?? [])]
-			.filter(([id]) => id !== shared?.userId)
-			.map(([, name]) => name);
 		ctx.ui.setWidget(
 			"leverage-session",
 			selected
@@ -219,45 +186,23 @@ export default function leverage(pi: ExtensionAPI): void {
 									? paint("warning", "● Working · Esc to stop")
 									: paint("success", "● Ready")
 						}`,
-						...(shared
-							? [
-									paint(
-										"dim",
-										[
-											shared.canWrite
-												? shared.session?.ownerId === shared.userId
-													? "Owner"
-													: "Collaborator"
-												: "Read-only",
-											shared.session
-												? visibilityName(shared.session.visibility)
-												: "Checking access",
-											changeSummary,
-											[...shared.viewers.values()]
-												.map(
-													(one) =>
-														`${one.userName}${one.state === "idle" ? " (idle)" : ""}`,
-												)
-												.join(", "),
-										]
-											.filter(Boolean)
-											.join(" · "),
-									),
-								]
-							: []),
-						...(typing.length
-							? [
-									paint(
-										"muted",
-										`${typing.join(", ")} ${typing.length === 1 ? "is" : "are"} typing…`,
-									),
-								]
-							: []),
+						...[
+							[
+								shared && !shared.canWrite
+									? "Read-only · ask the owner for collaborator access"
+									: "",
+								changeSummary,
+							]
+								.filter(Boolean)
+								.join(" · "),
+						]
+							.filter(Boolean)
+							.map((line) => paint("dim", line)),
 						...(approvals
 							? [
 									paint(
 										"warning",
-										`▲ ${approvals === 1 ? "1 approval" : `${approvals} approvals`} waiting · F9 to review`,
+										`▲ ${approvals === 1 ? "1 approval" : `${approvals} approvals`} waiting · F4 to review`,
 									),
 								]
 							: []),
@@ -280,12 +225,7 @@ export default function leverage(pi: ExtensionAPI): void {
 					]
 				: [
 						`${paint("accent", "◆ New Leverage session", true)}${
-							draft
-								? paint(
-										"dim",
-										`  ${draft.mode === "yolo" ? "Build" : "Plan"} mode · Enter creates it`,
-									)
-								: ""
+							draft ? paint("dim", "  Enter creates it") : ""
 						}`,
 						draft
 							? pairs([
@@ -297,31 +237,10 @@ export default function leverage(pi: ExtensionAPI): void {
 											? `${draft.model}${draft.reasoningEffort ? ` · ${draft.reasoningEffort}` : ""}`
 											: "Default",
 									],
-									[
-										"F3",
-										"Sharing",
-										draft.visibility === "workspace" ? "Public" : "Private",
-									],
-									[
-										"F4",
-										"People",
-										draft.grants.length
-											? `${draft.grants.length} invited`
-											: "None",
-									],
-									[
-										"F5",
-										"Provider",
-										draft.providerFamily === "codex"
-											? "Codex"
-											: draft.providerFamily === "claude_code"
-												? "Claude"
-												: "Default",
-									],
 								])
 							: paint(
 									draftError ? "error" : "dim",
-									draftError ?? "Loading Leverage defaults…",
+									draftError ?? "Loading the workspace…",
 								),
 						...(pendingCreation
 							? [
@@ -691,7 +610,6 @@ export default function leverage(pi: ExtensionAPI): void {
 	};
 	const send = async (prompt: Prompt, ctx: ExtensionContext) => {
 		writable();
-		shared?.touch(false);
 		const { client, session, signal } = requireSession();
 		if (sending) throw new Error("Wait for the current message to be sent.");
 		const opening = generation;
@@ -837,9 +755,6 @@ export default function leverage(pi: ExtensionAPI): void {
 				["app.session.resume", "sessions"],
 			] as const;
 			editor.handleInput = (data) => {
-				shared?.touch(
-					editor.getText().length > 0 && !data.startsWith("\u001b"),
-				);
 				const completing =
 					"isShowingAutocomplete" in editor &&
 					typeof editor.isShowingAutocomplete === "function" &&
@@ -925,9 +840,6 @@ export default function leverage(pi: ExtensionAPI): void {
 		try {
 			const link = sessionLink(ctx.sessionManager.getBranch());
 			connection = settings(link);
-			const workspaceKey = `${connection.host}/${connection.workspace}`;
-			conversations = workspaceConversations.get(workspaceKey) ?? new Map();
-			workspaceConversations.set(workspaceKey, conversations);
 			composerKey = `${connection.host}/${connection.workspace}/${link?.sessionId ?? (event.reason !== "new" ? connection.sessionId : undefined) ?? ctx.sessionManager.getSessionId()}`;
 			const savedComposer = composerDrafts.get(composerKey);
 			ctx.ui.setEditorText(savedComposer ?? "");
@@ -975,41 +887,33 @@ export default function leverage(pi: ExtensionAPI): void {
 				});
 				const overrides = nextDraft;
 				nextDraft = undefined;
-				draftLoading = workspace
-					.draft(lifetime.signal)
-					.then(async (loaded) => {
-						if (opening !== generation) return;
-						draft = { ...loaded, ...overrides };
-						const channels =
-							draft.context.type === "channel" || connection?.directory
-								? await workspace!.channels(lifetime.signal)
-								: [];
-						const channel = channels.find(
-							(one) =>
-								connection!.directory ===
-								`/${connection!.workspace}/${one.name}`,
-						);
-						if (
-							!overrides?.context &&
-							channel &&
-							opening === generation &&
-							draft
-						)
-							draft.context = { type: "channel", channelId: channel.id };
-						if (draft) draftContext = contextName(draft, channels);
-						if (opening === generation) status(ctx);
-					})
-					.catch((error: unknown) => {
-						if (opening === generation && !lifetime.signal.aborted) {
-							failure =
-								error instanceof Error
-									? error.message
-									: "Cannot load workspace defaults";
-							draftError = failure;
-							status(ctx);
-							report(ctx, error);
-						}
-					});
+				const loaded: SessionDraft = { ...workspace.draft(), ...overrides };
+				draftLoading = (async () => {
+					const channels =
+						loaded.context.type === "channel" || connection?.directory
+							? await workspace!.channels(lifetime.signal)
+							: [];
+					if (opening !== generation) return;
+					const channel = channels.find(
+						(one) =>
+							connection!.directory === `/${connection!.workspace}/${one.name}`,
+					);
+					if (!overrides?.context && channel)
+						loaded.context = { type: "channel", channelId: channel.id };
+					draft = loaded;
+					draftContext = contextName(loaded, channels);
+					status(ctx);
+				})().catch((error: unknown) => {
+					if (opening === generation && !lifetime.signal.aborted) {
+						failure =
+							error instanceof Error
+								? error.message
+								: "Cannot load the workspace channels";
+						draftError = failure;
+						status(ctx);
+						report(ctx, error);
+					}
+				});
 			}
 		} catch (error) {
 			if (opening !== generation) return;
@@ -1061,7 +965,7 @@ export default function leverage(pi: ExtensionAPI): void {
 	});
 	pi.registerCommand("leverage", {
 		description:
-			"New, sessions, channels, settings, share, changes, approvals, history, stop, queue, model",
+			"New, sessions, settings, changes, approvals, history, stop, queue, model",
 		handler: async (args, ctx) => {
 			const opening = generation;
 			dialogCount++;
@@ -1132,73 +1036,41 @@ export default function leverage(pi: ExtensionAPI): void {
 							section,
 						);
 					} else {
-						// An open session has fewer settings, so each key maps to the nearest one.
+						// An open session has no context to change, so F1 shows its details.
 						const picked =
-							section === "model" || section === "provider"
+							section === "model"
 								? "model"
-								: section === "visibility" || section === "members"
-									? "share"
-									: section === "context"
-										? "info"
-										: await chooseDrawer(
-												ctx,
-												"Session settings",
-												[
-													{
-														value: "model",
-														label: "Model and reasoning",
-														detail: model,
-													},
-													{
-														value: "share",
-														label: "Sharing and collaborators",
-													},
-													{ value: "info", label: "Session details" },
-												],
-												lifetime.signal,
-											);
+								: section === "context"
+									? "info"
+									: await chooseDrawer(
+											ctx,
+											"Session settings",
+											[
+												{
+													value: "model",
+													label: "Model and reasoning",
+													detail: model,
+												},
+												{ value: "info", label: "Session details" },
+											],
+											lifetime.signal,
+										);
 						if (picked === "model") await interactions!.show("model");
-						if (picked === "share" && shared?.session)
-							await shareSession(
-								workspace!,
-								ctx,
-								shared.session,
-								lifetime.signal,
-							);
 						if (picked === "info")
 							await textDrawer(
 								ctx,
-								"Session settings",
+								"Session details",
 								() =>
-									`${selected?.title ?? "Session"}\n${model}\n${shared?.session?.mode ?? ""} · ${shared?.session?.visibility ?? ""}\nAdvanced model settings inherit Leverage defaults.`,
+									[
+										selected?.title || "Untitled session",
+										selected?.location.directory,
+										selected?.id,
+										model,
+									]
+										.filter(Boolean)
+										.join("\n"),
 								lifetime.signal,
 							);
-					}
-					return;
-				}
-				if (action === "share") {
-					if (!selected) {
-						await draftLoading;
-						if (draft)
-							await editDraft(
-								workspace!,
-								ctx,
-								draft,
-								lifetime.signal,
-								(context) => {
-									draftContext = context;
-									status(ctx);
-								},
-								"visibility",
-							);
-					} else if (shared?.session) {
-						await shareSession(
-							workspace!,
-							ctx,
-							shared.session,
-							lifetime.signal,
-						);
-						await shared.refresh();
 					}
 					return;
 				}
@@ -1214,32 +1086,6 @@ export default function leverage(pi: ExtensionAPI): void {
 							status(ctx);
 						},
 					);
-					return;
-				}
-				if (action === "channels") {
-					channelView = true;
-					status(ctx);
-					const destination = await channelsDrawer(
-						workspace!,
-						ctx,
-						lifetime.signal,
-						conversations,
-					).finally(() => {
-						channelView = false;
-						status(ctx);
-					});
-					if (destination && "sessionId" in destination)
-						await switchTo(
-							await client.get(`ses_${destination.sessionId}`, lifetime.signal),
-							ctx,
-						);
-					else if (destination && "newInChannel" in destination) {
-						nextDraft = {
-							context: { type: "channel", channelId: destination.newInChannel },
-						};
-						const result = await ctx.newSession();
-						if (result.cancelled) nextDraft = undefined;
-					}
 					return;
 				}
 				if (
@@ -1302,7 +1148,6 @@ export default function leverage(pi: ExtensionAPI): void {
 						workspace!,
 						ctx,
 						lifetime.signal,
-						undefined,
 						text,
 					);
 					if (picked === "new") {
@@ -1326,13 +1171,9 @@ export default function leverage(pi: ExtensionAPI): void {
 	for (const [key, action] of [
 		["f1", "settings context"],
 		["f2", "settings model"],
-		["f3", "settings visibility"],
-		["f4", "settings members"],
-		["f5", "settings provider"],
-		["f6", "sessions"],
-		["f7", "channels"],
-		["f8", "changes"],
-		["f9", "approvals"],
+		["f3", "sessions"],
+		["f4", "approvals"],
+		["f5", "changes"],
 	] as const)
 		pi.registerShortcut(key, {
 			description: `Leverage ${action}`,

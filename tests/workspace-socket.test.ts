@@ -69,7 +69,7 @@ test("reconnects with replay cursor and deduplicates repeated native messages", 
 	expect(events).toEqual(["From Bob", "Updated"]);
 });
 
-test("revocation clears conversation and presence; workspace viewers cannot write", async () => {
+test("revocation clears the conversation; workspace viewers cannot write", async () => {
 	const f = fixture();
 	f.session.visibility = "workspace";
 	const errors: unknown[] = [];
@@ -106,7 +106,6 @@ test("revocation clears conversation and presence; workspace viewers cannot writ
 	f.publish({ type: "session.access_revoked", sessionId: SESSION });
 	await eventually(() => shared.revoked);
 	expect(shared.messages.size).toBe(0);
-	expect(shared.viewers.size).toBe(0);
 	expect(denied).toBe(1);
 	expect(errors).toEqual([]);
 });
