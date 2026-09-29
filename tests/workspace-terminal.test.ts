@@ -199,15 +199,23 @@ test("a running session shows Pi's working indicator in the composer divider", a
 	expect(ui.output()).toMatch(/── \S Working ─/);
 }, 45000);
 
-test("switching real Pi sessions restores each destination's composer draft", async () => {
+test("the session selector names each session's place, and switching restores each composer draft", async () => {
 	const second = "22222222-2222-4222-8222-222222222222";
 	const sessions = [
-		{ ...exampleSession(), title: "First session" },
-		{ ...exampleSession(), id: second, title: "Second session" },
+		{ ...exampleSession(), title: "First session", channelId: "general" },
+		{
+			...exampleSession(),
+			id: second,
+			title: "Second session",
+			repo: { fullName: "team/project" },
+			requestedBranch: "main",
+		},
 	];
 	const ui = await terminal(120, sessionRoutes(sessions));
 	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
+	await ui.wait("First session #general");
+	await ui.wait("Second session team/project / main");
 	await ui.key("First session\r");
 	await ui.wait("• First session");
 	await ui.key("First unsent draft /tmp/attachment.png");

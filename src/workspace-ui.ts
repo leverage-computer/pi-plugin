@@ -1,7 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { chooseDrawer, type DrawerItem, textDrawer } from "./drawers";
 import type { WorkspaceClient } from "./workspace-api";
-import type { Channel, SessionDraft } from "./workspace-schema";
+import type {
+	Channel,
+	SessionDraft,
+	WorkspaceSession,
+} from "./workspace-schema";
 
 const relative = new Intl.RelativeTimeFormat("en", {
 	numeric: "auto",
@@ -13,6 +17,24 @@ function ago(time?: string): string {
 	if (minutes > -60) return relative.format(minutes, "minute");
 	if (minutes > -1440) return relative.format(Math.round(minutes / 60), "hour");
 	return relative.format(Math.round(minutes / 1440), "day");
+}
+// Where a session works: its channel, its repository, or neither.
+function placeName(session: WorkspaceSession, channels: Channel[]): string {
+	const channel = channels.find((one) => one.id === session.channelId);
+	return (
+		[
+			session.channelId
+				? channel?.kind === "dm"
+					? "Direct message"
+					: `#${channel?.name ?? "channel"}`
+				: "",
+			session.repo
+				? `${session.repo.fullName}${session.requestedBranch ? ` / ${session.requestedBranch}` : ""}`
+				: "",
+		]
+			.filter(Boolean)
+			.join(" · ") || "Standalone"
+	);
 }
 export function contextName(
 	draft: SessionDraft,
@@ -167,7 +189,10 @@ export async function sessionsDrawer(
 ): Promise<string | undefined> {
 	let archived = false;
 	while (!signal.aborted) {
-		const sessions = await api.sessions(signal, archived);
+		const [sessions, channels] = await Promise.all([
+			api.sessions(signal, archived),
+			api.channels(signal),
+		]);
 		const picked = await chooseDrawer(
 			ctx,
 			"Leverage sessions",
@@ -184,6 +209,7 @@ export async function sessionsDrawer(
 						value: one.id,
 						label: one.title || "Untitled session",
 						detail: [
+							placeName(one, channels),
 							one.status.charAt(0).toUpperCase() + one.status.slice(1),
 							one.model ?? one.providerFamily,
 							ago(one.updatedAt),

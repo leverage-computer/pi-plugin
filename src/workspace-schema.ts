@@ -31,6 +31,8 @@ export const sessionSchema = z.object({
 	updatedAt: z.string().optional(),
 	contextWindow: z.string().nullable().optional(),
 	codexServiceTier: z.string().nullable().optional(),
+	requestedBranch: z.string().nullable().optional(),
+	repo: z.object({ fullName: z.string() }).nullable().optional(),
 });
 export const inputSchema = z.object({
 	uuid: z.string(),
