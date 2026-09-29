@@ -6,9 +6,11 @@ import {
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	type InputEvent,
+	rawKeyHint,
 	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import {
+	Loader,
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
@@ -123,6 +125,7 @@ export default function leverage(pi: ExtensionAPI): void {
 	let refresh: Promise<void> | undefined;
 	let refreshRequested = false;
 	let dialogCount = 0;
+	let working: Loader | undefined;
 	const displayed = new Set<string>();
 	const flag = (name: string) => {
 		const value = pi.getFlag(`leverage-${name}`);
@@ -145,126 +148,126 @@ export default function leverage(pi: ExtensionAPI): void {
 			const text = stripVTControlCharacters(value);
 			return theme ? theme.fg(color, bold ? theme.bold(text) : text) : text;
 		};
-		const join = (parts: string[]) => parts.join(paint("dim", " · "));
+		const join = (parts: string[]) => parts.join(paint("muted", " · "));
+		// Pi's own hint style, as in its startup header.
 		const keys = (hints: Array<[string, string]>) =>
-			join(
-				hints.map(
-					([key, label]) => `${paint("accent", key)} ${paint("muted", label)}`,
-				),
-			);
-		// Pi indents text widgets by a column, so the terminal draws them flush with the composer.
-		const show = (
-			key: string,
-			lines: string[] | undefined,
-			placement: "aboveEditor" | "belowEditor" = "aboveEditor",
-		) => {
-			if (theme && lines)
-				ctx.ui.setWidget(
-					key,
-					() => ({
-						invalidate() {},
-						render: (width: number) =>
-							lines.flatMap((line) => wrapTextWithAnsi(line, width)),
-					}),
-					{ placement },
-				);
-			else ctx.ui.setWidget(key, lines, { placement });
-		};
-		show(
-			"leverage-keys",
-			theme && selected
-				? [
-						keys([
-							["F1", "Details"],
-							["F2", "Model"],
-							["F3", "Sessions"],
-							["F4", "Approvals"],
-						]),
-					]
-				: undefined,
-			"belowEditor",
-		);
+			join(hints.map(([key, label]) => rawKeyHint(key, label)));
+		const spinner =
+			selected && (!ready || running)
+				? ready
+					? "Working"
+					: "Connecting"
+				: undefined;
+		if (!spinner) {
+			working?.stop();
+			working = undefined;
+		}
 		const approvals = interactions?.approvalCount ?? 0;
 		const questions = interactions?.questionCount ?? 0;
-		show(
-			"leverage-session",
-			selected
-				? [
-						`${paint("text", selected.title || selected.id, true)}  ${
-							!ready
-								? paint("muted", "○ Connecting…")
-								: running
-									? paint("warning", "● Working · Esc to stop")
-									: paint("success", "● Ready")
-						}`,
-						...(shared && !shared.canWrite
-							? [
-									paint(
-										"warning",
-										"Read-only · ask the owner for collaborator access",
-									),
-								]
-							: []),
-						...(approvals
-							? [
-									paint(
-										"warning",
-										`▲ ${approvals === 1 ? "1 approval" : `${approvals} approvals`} waiting · F4 to review`,
-									),
-								]
-							: []),
-						...(questions
-							? [
-									paint(
-										"warning",
-										`? ${questions === 1 ? "1 question" : `${questions} questions`} waiting · /leverage questions`,
-									),
-								]
-							: []),
-						...(failedPrompt
-							? [
-									paint(
-										"warning",
-										"▲ Send not confirmed · /leverage retry sends the same message",
-									),
-								]
-							: []),
-					]
-				: [
-						paint("accent", "New Leverage session", true),
-						draft
-							? join([
-									paint("text", draftContext),
-									paint(
-										"text",
-										draft.model
-											? `${draft.model}${draft.reasoningEffort ? ` / ${draft.reasoningEffort}` : ""}`
-											: "Default model",
-									),
-								])
-							: paint(
-									draftError ? "error" : "dim",
-									draftError ?? "Loading the workspace…",
+		const lines = selected
+			? [
+					...(shared && !shared.canWrite
+						? [
+								paint(
+									"warning",
+									"Read-only · ask the owner for collaborator access",
 								),
-						...(pendingCreation
-							? [
-									paint(
-										"warning",
-										"▲ Setup not confirmed · /leverage retry continues the same session",
-									),
-								]
-							: []),
-						...(theme
-							? [
-									keys([
-										["F1", "Context"],
-										["F2", "Model"],
-										["F3", "Sessions"],
-									]),
-								]
-							: []),
-					],
-		);
+							]
+						: []),
+					...(approvals
+						? [
+								paint(
+									"warning",
+									`▲ ${approvals === 1 ? "1 approval" : `${approvals} approvals`} waiting · F4 to review`,
+								),
+							]
+						: []),
+					...(questions
+						? [
+								paint(
+									"warning",
+									`? ${questions === 1 ? "1 question" : `${questions} questions`} waiting · /leverage questions`,
+								),
+							]
+						: []),
+					...(failedPrompt
+						? [
+								paint(
+									"warning",
+									"▲ Send not confirmed · /leverage retry sends the same message",
+								),
+							]
+						: []),
+					...(theme
+						? [
+								keys([
+									["F1", "details"],
+									["F2", "model"],
+									["F3", "sessions"],
+									["F4", "approvals"],
+								]),
+							]
+						: []),
+				]
+			: [
+					paint("accent", "New Leverage session", true),
+					draft
+						? join([
+								paint("text", draftContext),
+								paint(
+									"text",
+									draft.model
+										? `${draft.model}${draft.reasoningEffort ? ` / ${draft.reasoningEffort}` : ""}`
+										: "Default model",
+								),
+							])
+						: paint(
+								draftError ? "error" : "dim",
+								draftError ?? "Loading the workspace…",
+							),
+					...(pendingCreation
+						? [
+								paint(
+									"warning",
+									"▲ Setup not confirmed · /leverage retry continues the same session",
+								),
+							]
+						: []),
+					...(theme
+						? [
+								keys([
+									["F1", "context"],
+									["F2", "model"],
+									["F3", "sessions"],
+								]),
+							]
+						: []),
+				];
+		if (!theme) {
+			ctx.ui.setWidget("leverage-session", lines);
+			return;
+		}
+		// Pi indents text widgets by a column, so these lines sit flush with the composer.
+		ctx.ui.setWidget("leverage-session", (tui) => {
+			// Pi's own working indicator, kept across updates so it animates smoothly.
+			if (spinner) {
+				working ??= new Loader(
+					tui,
+					(text) => theme.fg("accent", text),
+					(text) => theme.fg("muted", text),
+					spinner,
+				);
+				working.setMessage(spinner);
+			}
+			const indicator = working;
+			return {
+				invalidate() {},
+				render: (width: number) => [
+					...(indicator ? indicator.render(width) : []),
+					...lines.flatMap((line) => wrapTextWithAnsi(line, width)),
+				],
+			};
+		});
 	};
 	const report = (ctx: ExtensionContext, error: unknown) => {
 		ctx.ui.notify(
@@ -287,6 +290,8 @@ export default function leverage(pi: ExtensionAPI): void {
 	};
 	const disconnect = () => {
 		generation++;
+		working?.stop();
+		working = undefined;
 		interactions?.close();
 		interactions = undefined;
 		lifetime.abort();
@@ -438,7 +443,7 @@ export default function leverage(pi: ExtensionAPI): void {
 					ctx,
 				);
 				if (shared.session)
-					model = `${shared.session.model ?? shared.session.providerFamily}${shared.session.reasoningEffort ? ` · ${shared.session.reasoningEffort}` : ""}`;
+					model = `${shared.session.model ?? shared.session.providerFamily}${shared.session.reasoningEffort ? ` • ${shared.session.reasoningEffort}` : ""}`;
 				interactions?.permissionsChanged();
 				status(ctx);
 			},
@@ -527,7 +532,7 @@ export default function leverage(pi: ExtensionAPI): void {
 						selected = { ...selected!, title: event.data.title };
 						pi.setSessionName(event.data.title);
 					} else if (event.type === "session.model.selected") {
-						model = `${event.data.model.id}${event.data.model.variant ? ` · ${event.data.model.variant}` : ""}`;
+						model = `${event.data.model.id}${event.data.model.variant ? ` • ${event.data.model.variant}` : ""}`;
 					} else if (event.type === "session.deleted") {
 						ready = false;
 						streamFailed = true;
@@ -779,43 +784,37 @@ export default function leverage(pi: ExtensionAPI): void {
 			};
 			return editor;
 		});
-		ctx.ui.setHeader((_tui, theme) => ({
-			invalidate() {},
-			render: (width) => [
-				"",
-				truncateToWidth(
-					`${theme.bold(theme.fg("accent", "◆ Leverage"))}${theme.fg("dim", stripVTControlCharacters(connection ? `  ${connection.workspace}` : ""))}`,
-					width,
-				),
-			],
-		}));
+		// Pi's footer layout, with the Leverage folder and model in place of local ones.
 		ctx.ui.setFooter((_tui, theme) => ({
 			invalidate() {},
 			render: (width) => {
-				const state = theme.fg(
+				const place = stripVTControlCharacters(
+					[
+						selected?.location.directory ??
+							(connection ? `/${connection.workspace}` : ""),
+						selected?.title,
+					]
+						.filter(Boolean)
+						.join(" • "),
+				);
+				const state =
 					streamState === "live"
-						? "success"
-						: streamState === "disconnected"
-							? "error"
-							: "warning",
-					`● ${streamState}`,
-				);
-				const place = truncateToWidth(
-					theme.fg(
-						"dim",
-						stripVTControlCharacters(
-							[connection?.workspace ?? "Leverage", model]
-								.filter(Boolean)
-								.join(" · "),
-						),
-					),
-					Math.max(0, width - visibleWidth(state) - 2),
-				);
+						? theme.fg("dim", streamState)
+						: theme.fg(
+								streamState === "disconnected" ? "error" : "warning",
+								streamState,
+							);
+				const right = theme.fg("dim", stripVTControlCharacters(model));
+				const gap = width - visibleWidth(state) - visibleWidth(right);
 				return [
 					truncateToWidth(
-						`${place}${" ".repeat(Math.max(2, width - visibleWidth(place) - visibleWidth(state)))}${state}`,
+						theme.fg("dim", place),
 						width,
+						theme.fg("dim", "..."),
 					),
+					gap >= 2
+						? `${state}${" ".repeat(gap)}${right}`
+						: truncateToWidth(state, width),
 				];
 			},
 		}));

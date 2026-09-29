@@ -186,29 +186,28 @@ test("switching real Pi sessions restores each destination's composer draft", as
 	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("First session\r");
-	await ui.wait("First session  ● Ready");
+	await ui.wait("• First session");
 	await ui.key("First unsent draft /tmp/attachment.png");
 	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("Second session\r");
-	await ui.wait("Second session  ● Ready");
+	await ui.wait("• Second session");
 	await ui.key("Second unsent draft");
 	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("First session\r");
-	await ui.wait("First session  ● Ready");
-	await ui.wait("First unsent draft /tmp/attachment.png");
-	expect(
-		ui.output().slice(ui.output().lastIndexOf("First session  ● Ready")),
-	).not.toContain("Second unsent draft");
+	await ui.wait("• First session");
+	// Typing redraws only the composer line, which must hold this session's draft.
+	await ui.key("!");
+	await ui.wait("First unsent draft /tmp/attachment.png!");
+	expect(ui.output()).not.toContain("Second unsent draft");
 	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("Second session\r");
-	await ui.wait("Second session  ● Ready");
-	await ui.wait("Second unsent draft");
-	expect(
-		ui.output().slice(ui.output().lastIndexOf("Second session  ● Ready")),
-	).not.toContain("First unsent draft");
+	await ui.wait("• Second session");
+	await ui.key("!");
+	await ui.wait("Second unsent draft!");
+	expect(ui.output()).not.toContain("First unsent draft");
 	expect(ui.f.state.createCount).toBe(0);
 	expect(
 		ui.f.requests.some(

@@ -746,7 +746,7 @@ describe("Pi hosted frontend", () => {
 		for (const runner of [first, second]) {
 			expect(historyRows(runner)).toHaveLength(3);
 			expect(transcript(runner)).toContain("The project passes.");
-			expect(transcript(runner)).toContain("✓ bash bun test");
+			expect(transcript(runner)).toContain("$ bun test");
 			expect(
 				runner
 					.createContext()

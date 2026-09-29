@@ -96,7 +96,7 @@ describe("Shared session history", () => {
 				.join("\n"),
 		);
 		expect(shown).toContain("I checked the files.");
-		expect(shown).toContain("✓ bash pwd");
+		expect(shown).toContain("$ pwd");
 		expect(shown).toContain("/work/project");
 		expect(shown).not.toContain("private reasoning");
 		expect(history.entries()[1]?.role).toBe("assistant");
@@ -132,7 +132,7 @@ describe("Shared session history", () => {
 			.render(80)
 			.join("\n");
 		expect(compact).toContain("Result line 0");
-		expect(compact).toContain("94 more lines");
+		expect(compact).toContain("90 more lines");
 		expect(compact).not.toContain("Result line 99");
 		expect(
 			createHistoryComponent(read, true, theme).render(80).join("\n"),
@@ -493,7 +493,11 @@ describe("Shared session history", () => {
 		);
 		const text = () =>
 			stripVTControlCharacters(component.render(80).join("\n"));
-		expect(text()).toContain("● bash ls");
+		// The card's background shows whether the call is still running.
+		expect(component.render(80).join("\n")).toContain(
+			theme.getBgAnsi("toolPendingBg"),
+		);
+		expect(text()).toContain("$ ls");
 		history.apply(
 			event("session.tool.progress", {
 				...ref,
@@ -509,7 +513,8 @@ describe("Shared session history", () => {
 			}),
 		);
 		const rendered = component.render(80).join("\n");
-		expect(text()).toContain("✓ bash ls");
+		expect(rendered).toContain(theme.getBgAnsi("toolSuccessBg"));
+		expect(rendered).not.toContain(theme.getBgAnsi("toolPendingBg"));
 		expect(rendered).toContain("Finished");
 		expect(rendered).not.toContain("\u001b]52");
 		expect(history.entries()).toHaveLength(1);

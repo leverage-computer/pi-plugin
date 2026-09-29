@@ -375,18 +375,19 @@ export function createHistoryComponent(
 				);
 		}
 	};
+	// Pi previews ten lines of tool output until tools are expanded.
 	const preview = (value: string, color: ThemeColor): Component => {
 		const body = new Text(theme.fg(color, plain(value)), 0, 0);
 		return {
 			invalidate: () => body.invalidate(),
 			render(width) {
 				const lines = body.render(width);
-				return expanded || lines.length <= 6
+				return expanded || lines.length <= 10
 					? lines
 					: [
-							...lines.slice(0, 6),
+							...lines.slice(0, 10),
 							...new Text(
-								`${theme.fg("muted", `… ${lines.length - 6} more lines ·`)} ${keyHint("app.tools.expand", "to expand")}`,
+								`${theme.fg("muted", `... (${lines.length - 10} more lines,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`,
 								0,
 								0,
 							).render(width),
@@ -404,9 +405,12 @@ export function createHistoryComponent(
 			),
 		);
 		const summary = plain(toolSummary(part.input));
+		// Pi titles a shell call as its command and other calls as name and target.
 		card.addChild(
 			new Text(
-				`${failed ? theme.fg("error", "✗") : done ? theme.fg("success", "✓") : theme.fg("warning", "●")} ${theme.bold(theme.fg("toolTitle", plain(part.name)))}${summary ? ` ${theme.fg("accent", summary)}` : ""}`,
+				part.name === "bash" && summary
+					? theme.fg("toolTitle", theme.bold(`$ ${summary}`))
+					: `${theme.fg("toolTitle", theme.bold(plain(part.name)))}${summary ? ` ${theme.fg("accent", summary)}` : ""}`,
 				0,
 				0,
 			),
@@ -428,7 +432,7 @@ export function createHistoryComponent(
 			new Text(
 				[
 					theme.bold(
-						theme.fg(own ? "accent" : "text", author.replace(/ \(you\)$/, "")),
+						theme.fg("userMessageText", author.replace(/ \(you\)$/, "")),
 					),
 					own ? theme.fg("muted", " (you)") : "",
 					entry.created
@@ -492,7 +496,7 @@ export function createHistoryComponent(
 											italic: true,
 										})
 									: new Text(
-											theme.italic(theme.fg("thinkingText", "Thinking…")),
+											theme.italic(theme.fg("thinkingText", "Thinking...")),
 											1,
 											0,
 										),

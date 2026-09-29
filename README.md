@@ -96,10 +96,9 @@ Closing Pi also leaves the shared agent running.
 
 ## Workspace drawers
 
-Settings and navigation open on the right of wide terminals and fill narrow
-terminals. Type to filter, use arrows and Enter to choose, and Escape to return.
-A check mark shows the current choice. When a row does not fit, its full text
-shows under the list. The main composer and attachment paths survive drawers.
+Settings and navigation use Pi's own selector style above the footer. Type to
+filter, use arrows and Enter to choose, and Escape to return. A check mark shows
+the current choice. When a row does not fit, its full text shows under the list. The main composer and attachment paths survive drawers.
 Session drafts stay scoped to the remote session while Pi is open.
 
 A new session works in a channel or standalone, like a Codex project or an
@@ -116,9 +115,10 @@ Viewers can inspect tool requests but cannot send prompts or decide them. Tool
 approval also follows Leverage's separate tool policy. Role changes apply live
 and revocation closes the affected view.
 
-The activity strip shows the agent's state, waiting approvals, and read-only
-access. A key bar under the composer lists the function keys for the current
-view. Opening a drawer never approves a request.
+While the agent works, Pi's working indicator runs above the composer. Waiting
+approvals, read-only access, and the function keys for the current view show
+there too. The footer shows the session's folder, name, connection, and model.
+Opening a drawer never approves a request.
 
 ## Shared conversation
 
