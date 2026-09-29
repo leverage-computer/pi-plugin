@@ -123,13 +123,12 @@ test("narrow Pi terminal sets the channel with F1 and the model with F2, keeping
 	expect(ui.f.requests.some((r) => r.method !== "GET")).toBe(false);
 }, 45000);
 
-test("switching real Pi sessions restores each destination's composer draft", async () => {
-	const second = "22222222-2222-4222-8222-222222222222";
-	const sessions = [
-		{ ...exampleSession(), title: "First session" },
-		{ ...exampleSession(), id: second, title: "Second session" },
-	];
-	const ui = await terminal(120, (request) => {
+// Serves these sessions through the native and OpenCode routes a Pi view reads.
+function sessionRoutes(
+	sessions: ReturnType<typeof exampleSession>[],
+	running: string[] = [],
+) {
+	return (request: Request) => {
 		const path = new URL(request.url).pathname;
 		if (path === "/api/sessions") return Response.json(sessions);
 		if (path.endsWith("/bootstrap"))
@@ -153,7 +152,12 @@ test("switching real Pi sessions restores each destination's composer draft", as
 				}),
 				{ headers: { "content-type": "text/event-stream" } },
 			);
-		if (path.endsWith("/active")) return Response.json({ data: {} });
+		if (path.endsWith("/active"))
+			return Response.json({
+				data: Object.fromEntries(
+					running.map((id) => [`ses_${id}`, { type: "running" }]),
+				),
+			});
 		if (path.endsWith("/message"))
 			return Response.json({ data: [], cursor: {} });
 		if (
@@ -182,7 +186,26 @@ test("switching real Pi sessions restores each destination's composer draft", as
 				},
 			});
 		}
-	});
+	};
+}
+
+test("a running session shows Pi's working indicator in the composer divider", async () => {
+	const session = { ...exampleSession(), title: "Busy session" };
+	const ui = await terminal(120, sessionRoutes([session], [session.id]));
+	await ui.key("\x1bOR");
+	await ui.wait("Leverage sessions");
+	await ui.key("Busy session\r");
+	await ui.wait(" Working ─");
+	expect(ui.output()).toMatch(/── \S Working ─/);
+}, 45000);
+
+test("switching real Pi sessions restores each destination's composer draft", async () => {
+	const second = "22222222-2222-4222-8222-222222222222";
+	const sessions = [
+		{ ...exampleSession(), title: "First session" },
+		{ ...exampleSession(), id: second, title: "Second session" },
+	];
+	const ui = await terminal(120, sessionRoutes(sessions));
 	await ui.key("\x1bOR");
 	await ui.wait("Leverage sessions");
 	await ui.key("First session\r");

@@ -12,6 +12,7 @@ import {
 import {
 	Loader,
 	matchesKey,
+	type TUI,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -56,6 +57,21 @@ const SETTING_SECTIONS = ["context", "model"] as const;
 // Pi creates a new extension instance when it switches sessions.
 const composerDrafts = new Map<string, string>();
 let nextDraft: Partial<SessionDraft> | undefined;
+
+// Pi's working indicator, which Pi's composer draws in its top border.
+class BorderStatus extends Loader {
+	renderInBorder(width: number): string {
+		const line = super.render(width + 2)[1] ?? "";
+		return truncateToWidth(
+			line.startsWith(" ") ? line.slice(1).trimEnd() : line.trimEnd(),
+			width,
+			"",
+		);
+	}
+	renderSpinnerInBorder(width: number): string {
+		return truncateToWidth(this.getRenderedIndicator(), width, "");
+	}
+}
 
 export default function leverage(pi: ExtensionAPI): void {
 	// Pi needs a model entry to open its composer without a local provider login.
@@ -125,7 +141,8 @@ export default function leverage(pi: ExtensionAPI): void {
 	let refresh: Promise<void> | undefined;
 	let refreshRequested = false;
 	let dialogCount = 0;
-	let working: Loader | undefined;
+	let working: BorderStatus | undefined;
+	let composer: { editor: CustomEditor; tui: TUI } | undefined;
 	const displayed = new Set<string>();
 	const flag = (name: string) => {
 		const value = pi.getFlag(`leverage-${name}`);
@@ -159,8 +176,24 @@ export default function leverage(pi: ExtensionAPI): void {
 					: "Connecting"
 				: undefined;
 		if (!spinner) {
+			composer?.editor.setWorkingStatusIndicator(undefined);
 			working?.stop();
 			working = undefined;
+		} else if (composer) {
+			const { editor, tui } = composer;
+			working ??= new BorderStatus(
+				tui,
+				(text) => editor.borderColor(text),
+				(text) => editor.borderColor(text),
+				spinner,
+			);
+			working.setMessage(spinner);
+			// Pi does not export its indicator type; the composer calls only the border methods.
+			editor.setWorkingStatusIndicator(
+				working as unknown as Parameters<
+					CustomEditor["setWorkingStatusIndicator"]
+				>[0],
+			);
 		}
 		const approvals = interactions?.approvalCount ?? 0;
 		const questions = interactions?.questionCount ?? 0;
@@ -249,9 +282,9 @@ export default function leverage(pi: ExtensionAPI): void {
 		}
 		// Pi indents text widgets by a column, so these lines sit flush with the composer.
 		ctx.ui.setWidget("leverage-session", (tui) => {
-			// Pi's own working indicator, kept across updates so it animates smoothly.
-			if (spinner) {
-				working ??= new Loader(
+			// Another extension's composer may not draw the indicator, so it goes here instead.
+			if (spinner && !composer) {
+				working ??= new BorderStatus(
 					tui,
 					(text) => theme.fg("accent", text),
 					(text) => theme.fg("muted", text),
@@ -259,7 +292,7 @@ export default function leverage(pi: ExtensionAPI): void {
 				);
 				working.setMessage(spinner);
 			}
-			const indicator = working;
+			const indicator = composer ? undefined : working;
 			return {
 				invalidate() {},
 				render: (width: number) => [
@@ -290,6 +323,7 @@ export default function leverage(pi: ExtensionAPI): void {
 	};
 	const disconnect = () => {
 		generation++;
+		composer?.editor.setWorkingStatusIndicator(undefined);
 		working?.stop();
 		working = undefined;
 		interactions?.close();
@@ -731,7 +765,11 @@ export default function leverage(pi: ExtensionAPI): void {
 			};
 			const editor =
 				previousEditor?.(tui, theme, keys) ??
-				new CustomEditor(tui, theme, keys);
+				new CustomEditor(tui, theme, keys, { embedWorkingStatus: true });
+			composer =
+				editor instanceof CustomEditor && editor.embedWorkingStatus
+					? { editor, tui }
+					: undefined;
 			const handleInput = editor.handleInput.bind(editor);
 			const actions = [
 				["app.model.select", "model"],
