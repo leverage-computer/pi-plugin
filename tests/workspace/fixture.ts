@@ -1,7 +1,7 @@
 import type { ServerWebSocket } from "bun";
-import { type ModelInfo, SessionClient } from "../src/api";
-import { WorkspaceClient } from "../src/workspace-api";
-import type { WorkspaceSession } from "../src/workspace-schema";
+import { type ModelInfo, SessionClient } from "../../src/api";
+import { WorkspaceClient } from "../../src/workspace/api";
+import type { WorkspaceSession } from "../../src/workspace/schema";
 
 export const SESSION = "11111111-1111-4111-8111-111111111111";
 export const MEMBER = "member";

@@ -1,11 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { SharedSession } from "../src/workspace-state";
-import {
-	eventually,
-	MEMBER,
-	SESSION,
-	workspaceFixture,
-} from "./workspace-fixture";
+import { SharedSession } from "../../src/workspace/state";
+import { eventually, MEMBER, SESSION, workspaceFixture } from "./fixture";
 
 const fixtures: ReturnType<typeof workspaceFixture>[] = [];
 const sessions: SharedSession[] = [];

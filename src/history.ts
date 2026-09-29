@@ -19,8 +19,8 @@ import type {
 	SessionInbox,
 } from "@opencode/schema";
 import type { SessionEvent, SessionMessage } from "./api";
-import { nativeId } from "./workspace-api";
-import type { SessionInput, WorkspaceMember } from "./workspace-schema";
+import { nativeId } from "./workspace/api";
+import type { SessionInput, WorkspaceMember } from "./workspace/schema";
 
 export const HISTORY_ENTRY = "leverage-history";
 

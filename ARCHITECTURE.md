@@ -150,9 +150,9 @@ if the connection or terminal startup fails.
 | [src/api.ts](src/api.ts) | HTTP requests, contract validation, token renewal, and SSE |
 | [src/history.ts](src/history.ts) | Shared-message projection, rendering, and deduplication |
 | [src/session-ui.ts](src/session-ui.ts) | History pages and local session association |
-| [src/workspace-api.ts](src/workspace-api.ts) / [src/workspace-schema.ts](src/workspace-schema.ts) | Validated native reads and creation |
-| [src/workspace-socket.ts](src/workspace-socket.ts) / [src/workspace-state.ts](src/workspace-state.ts) | Authenticated Node WebSocket, replay, canonical inputs, permissions |
-| [src/drawers.ts](src/drawers.ts) / [src/workspace-ui.ts](src/workspace-ui.ts) | Responsive searchable settings and session navigation |
+| [src/workspace/api.ts](src/workspace/api.ts) / [src/workspace/schema.ts](src/workspace/schema.ts) | Validated native reads and creation |
+| [src/workspace/socket.ts](src/workspace/socket.ts) / [src/workspace/state.ts](src/workspace/state.ts) | Authenticated Node WebSocket, replay, canonical inputs, permissions |
+| [src/drawers.ts](src/drawers.ts) / [src/workspace/ui.ts](src/workspace/ui.ts) | Responsive searchable settings and session navigation |
 | [src/interactions.ts](src/interactions.ts) | Approval, question, model, and inbox dialogs |
 | [src/remote.ts](src/remote.ts) | Manual-shell connection, output limits, cancellation, and cleanup |
 

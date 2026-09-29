@@ -7,7 +7,7 @@ import {
 	isHistoryEntry,
 	SharedHistory,
 } from "../src/history";
-import { nativeId } from "../src/workspace-api";
+import { nativeId } from "../src/workspace/api";
 
 const sessionId = "ses_shared";
 let nextEvent = 0;

@@ -1,11 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { chooseDrawer, type DrawerItem, textDrawer } from "./drawers";
-import type { WorkspaceClient } from "./workspace-api";
-import type {
-	Channel,
-	SessionDraft,
-	WorkspaceSession,
-} from "./workspace-schema";
+import { chooseDrawer, type DrawerItem, textDrawer } from "../drawers";
+import type { WorkspaceClient } from "./api";
+import type { Channel, SessionDraft, WorkspaceSession } from "./schema";
 
 const relative = new Intl.RelativeTimeFormat("en", {
 	numeric: "auto",

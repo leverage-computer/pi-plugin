@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { LeverageConnection, SessionClient } from "./api";
+import type { LeverageConnection, SessionClient } from "../api";
 import {
 	bootstrapSchema,
 	channelSchema,
@@ -8,8 +8,8 @@ import {
 	memberSchema,
 	type SessionDraft,
 	sessionSchema,
-} from "./workspace-schema";
-import { WorkspaceSocket } from "./workspace-socket";
+} from "./schema";
+import { WorkspaceSocket } from "./socket";
 
 const id = encodeURIComponent;
 const workspaceList = z.array(z.object({ id: z.string(), slug: z.string() }));

@@ -40,10 +40,10 @@ import {
 	sessionLink,
 	viewRemoteHistory,
 } from "./session-ui";
-import { WorkspaceClient } from "./workspace-api";
-import type { SessionDraft } from "./workspace-schema";
-import { SharedSession } from "./workspace-state";
-import { contextName, editDraft, sessionsDrawer } from "./workspace-ui";
+import { WorkspaceClient } from "./workspace/api";
+import type { SessionDraft } from "./workspace/schema";
+import { SharedSession } from "./workspace/state";
+import { contextName, editDraft, sessionsDrawer } from "./workspace/ui";
 
 type Prompt = {
 	id: string;

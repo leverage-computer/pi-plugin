@@ -6,8 +6,8 @@ import type {
 import { Container, matchesKey, Text } from "@earendil-works/pi-tui";
 import type { SessionClient, SessionInfo } from "./api";
 import { createHistoryComponent, SharedHistory } from "./history";
-import { nativeId } from "./workspace-api";
-import type { SessionInput, WorkspaceMember } from "./workspace-schema";
+import { nativeId } from "./workspace/api";
+import type { SessionInput, WorkspaceMember } from "./workspace/schema";
 
 export const LINK_ENTRY = "leverage-session";
 

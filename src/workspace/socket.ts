@@ -1,6 +1,6 @@
 import WebSocket from "ws";
-import type { SessionClient } from "./api";
-import { eventSchema, type WorkspaceEvent } from "./workspace-schema";
+import type { SessionClient } from "../api";
+import { eventSchema, type WorkspaceEvent } from "./schema";
 
 export class WorkspaceSocket {
 	private socket?: WebSocket;

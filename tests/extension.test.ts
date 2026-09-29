@@ -26,7 +26,7 @@ import type {
 } from "../src/api";
 import { HISTORY_ENTRY } from "../src/history";
 import { LINK_ENTRY, sessionLink } from "../src/session-ui";
-import { nativeId } from "../src/workspace-api";
+import { nativeId } from "../src/workspace/api";
 
 // Terminal widgets and history rows draw with the active Pi theme.
 initTheme("dark", false);

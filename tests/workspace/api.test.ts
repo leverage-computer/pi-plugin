@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
-import { eventually, SESSION, workspaceFixture } from "./workspace-fixture";
+import { eventually, SESSION, workspaceFixture } from "./fixture";
 
 const fixtures: ReturnType<typeof workspaceFixture>[] = [];
 afterEach(async () => {

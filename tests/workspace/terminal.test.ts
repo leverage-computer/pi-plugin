@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { exampleSession, SESSION, workspaceFixture } from "./workspace-fixture";
+import { exampleSession, SESSION, workspaceFixture } from "./fixture";
 
 const disposals: Array<() => Promise<void>> = [];
 afterEach(async () => {

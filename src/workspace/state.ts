@@ -1,12 +1,12 @@
-import type { WorkspaceClient } from "./workspace-api";
-import { nativeId } from "./workspace-api";
+import type { WorkspaceClient } from "./api";
+import { nativeId } from "./api";
 import type {
 	SessionInput,
 	WorkspaceEvent,
 	WorkspaceMember,
 	WorkspaceSession,
-} from "./workspace-schema";
-import type { WorkspaceSocket } from "./workspace-socket";
+} from "./schema";
+import type { WorkspaceSocket } from "./socket";
 
 export class SharedSession {
 	session?: WorkspaceSession;
