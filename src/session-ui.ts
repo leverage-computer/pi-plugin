@@ -1,10 +1,10 @@
-import { stripVTControlCharacters } from "node:util";
 import type {
 	ExtensionContext,
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { Container, matchesKey, Text } from "@earendil-works/pi-tui";
-import type { SessionClient, SessionInfo } from "./api";
+import { type SessionClient, type SessionInfo, sameSessionId } from "./api";
+import { clean } from "./drawers";
 import { createHistoryComponent, SharedHistory } from "./history";
 import { nativeId } from "./workspace/api";
 import type { SessionInput, WorkspaceMember } from "./workspace/schema";
@@ -42,7 +42,7 @@ export function sameSession(one: SessionLink, other: SessionLink): boolean {
 	return (
 		one.host === other.host &&
 		one.workspace === other.workspace &&
-		one.sessionId.replace(/^ses_/, "") === other.sessionId.replace(/^ses_/, "")
+		sameSessionId(one.sessionId, other.sessionId)
 	);
 }
 
@@ -83,7 +83,7 @@ export async function viewRemoteHistory(
 				.map((entry) => entry.content)
 				.join("\n\n") || "This session has no messages yet.";
 		if (ctx.mode !== "tui") {
-			ctx.ui.notify(stripVTControlCharacters(content), "info");
+			ctx.ui.notify(clean(content), "info");
 			return;
 		}
 		const action = await ctx.ui.custom<"older" | "newer" | "close">(
@@ -108,7 +108,7 @@ export async function viewRemoteHistory(
 							...new Text(
 								theme.fg(
 									"accent",
-									stripVTControlCharacters(
+									clean(
 										`${session.title || "Leverage history"} · Page ${pageNumber + 1}`,
 									),
 								),
@@ -153,119 +153,4 @@ export async function viewRemoteHistory(
 		if (action === "older") cursors[++pageNumber] = page.cursor.next;
 		else pageNumber -= 1;
 	}
-}
-
-export async function newRemoteSession(
-	api: SessionClient,
-	ctx: ExtensionContext,
-	options: {
-		title?: string;
-		directory?: string;
-		workspace: string;
-		signal: AbortSignal;
-	},
-): Promise<SessionInfo | undefined> {
-	let title = options.title?.trim();
-	if (!title) {
-		if (!ctx.hasUI)
-			throw new Error("Use /leverage new <title> to create a session.");
-		title = (
-			await ctx.ui.input("New Leverage session", "Session title", {
-				signal: options.signal,
-			})
-		)?.trim();
-	}
-	if (!title || options.signal.aborted) return;
-	let directory = options.directory;
-	if (!directory && ctx.hasUI) {
-		const folders = await api.folders(options.signal);
-		if (options.signal.aborted) return;
-		directory = await ctx.ui.select("Session folder", folders, {
-			signal: options.signal,
-		});
-		if (!directory || options.signal.aborted) return;
-	}
-	return api.create({
-		title,
-		directory: directory ?? `/${options.workspace}`,
-		signal: options.signal,
-	});
-}
-
-export async function pickRemoteSession(
-	api: SessionClient,
-	ctx: ExtensionContext,
-	options: {
-		workspace: string;
-		directory?: string;
-		search?: string;
-		signal: AbortSignal;
-	},
-): Promise<SessionInfo | undefined> {
-	if (!ctx.hasUI)
-		throw new Error(
-			"Use --leverage-session ID or /leverage open ID outside interactive mode.",
-		);
-	let search = options.search ?? "";
-	let cursor: string | undefined;
-	const previous: Array<string | undefined> = [];
-	let archived = false;
-	while (!options.signal.aborted) {
-		const page = await api.list({
-			search,
-			cursor,
-			limit: 30,
-			directory: archived
-				? `/${options.workspace}/.archive`
-				: options.directory,
-			signal: options.signal,
-		});
-		if (options.signal.aborted) return;
-		const labels = page.data.map((session) => {
-			const updated = new Date(session.time.updated).toLocaleString();
-			return stripVTControlCharacters(
-				`${session.title || "Untitled session"} · ${session.location.directory} · ${updated} · ${session.id}`,
-			);
-		});
-		const actions = [
-			"+ New session",
-			"Search sessions",
-			"Refresh",
-			archived ? "Show active sessions" : "Show archived sessions",
-		];
-		if (previous.length) actions.push("Previous page");
-		if (page.cursor.next) actions.push("Next page");
-		const selected = await ctx.ui.select(
-			`Leverage · ${options.workspace}${search ? ` · ${search}` : ""}${page.data.length ? "" : " · No sessions found"}`,
-			[...actions, ...labels],
-			{ signal: options.signal },
-		);
-		if (selected === undefined || options.signal.aborted) return;
-		const index = labels.indexOf(selected);
-		if (index !== -1) return page.data[index];
-		if (selected === "+ New session")
-			return newRemoteSession(api, ctx, options);
-		if (selected === "Search sessions") {
-			const entered = await ctx.ui.input("Search Leverage sessions", search, {
-				signal: options.signal,
-			});
-			if (entered === undefined) continue;
-			search = entered.trim();
-			cursor = undefined;
-			previous.length = 0;
-		} else if (selected === "Next page") {
-			previous.push(cursor);
-			cursor = page.cursor.next;
-		} else if (selected === "Previous page") {
-			cursor = previous.pop();
-		} else if (
-			selected === "Show active sessions" ||
-			selected === "Show archived sessions"
-		) {
-			archived = !archived;
-			cursor = undefined;
-			previous.length = 0;
-		}
-	}
-	return undefined;
 }

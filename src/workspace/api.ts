@@ -4,7 +4,6 @@ import type { LeverageConnection, SessionClient } from "../api";
 import {
 	bootstrapSchema,
 	channelSchema,
-	familySchema,
 	memberSchema,
 	type SessionDraft,
 	sessionSchema,
@@ -13,15 +12,6 @@ import { WorkspaceSocket } from "./socket";
 
 const id = encodeURIComponent;
 const workspaceList = z.array(z.object({ id: z.string(), slug: z.string() }));
-const familySettings = z.object({
-	settings: z.array(
-		z.object({
-			providerFamily: familySchema,
-			defaultModel: z.string().nullable(),
-			defaultReasoningEffort: z.string().nullable(),
-		}),
-	),
-});
 const availability = z.object({ claude_code: z.boolean(), codex: z.boolean() });
 
 /** OpenCode aliases name the same records as the native API. */
@@ -88,9 +78,6 @@ export class WorkspaceClient {
 			);
 		return result.data;
 	}
-	private async scope(signal?: AbortSignal): Promise<string> {
-		return `/api/workspaces/${id(await this.workspaceId(signal))}`;
-	}
 	async members(signal?: AbortSignal) {
 		return this.read(
 			`/api/users?workspaceId=${id(await this.workspaceId(signal))}`,
@@ -119,20 +106,23 @@ export class WorkspaceClient {
 			signal,
 		);
 	}
-	async defaults(signal?: AbortSignal) {
-		const scope = await this.scope(signal);
-		const [families, healthy] = await Promise.all([
-			this.read(`${scope}/provider-family-settings`, familySettings, signal),
-			this.read(`${scope}/provider-access/availability`, availability, signal),
-		]);
-		return { families: families.settings, healthy };
+	// Which hosted providers have working credentials.
+	async providers(signal?: AbortSignal) {
+		return this.read(
+			`/api/workspaces/${id(await this.workspaceId(signal))}/provider-access/availability`,
+			availability,
+			signal,
+		);
 	}
 	draft(): SessionDraft {
 		return { requestId: randomUUID(), context: { type: "none" } };
 	}
-	async validateDraft(draft: SessionDraft, signal: AbortSignal): Promise<void> {
-		const [defaults, models] = await Promise.all([
-			this.defaults(signal),
+	private async validateDraft(
+		draft: SessionDraft,
+		signal: AbortSignal,
+	): Promise<void> {
+		const [providers, models] = await Promise.all([
+			this.providers(signal),
 			this.transport.models(signal),
 		]);
 		let inherited: string | undefined;
@@ -149,10 +139,10 @@ export class WorkspaceClient {
 		const family =
 			draft.providerFamily ??
 			inherited ??
-			(defaults.healthy.claude_code ? "claude_code" : "codex");
+			(providers.claude_code ? "claude_code" : "codex");
 		if (family !== "codex" && family !== "claude_code")
 			throw new Error("Choose a hosted provider.");
-		if (!defaults.healthy[family])
+		if (!providers[family])
 			throw new Error(
 				"This provider is unavailable. Connect it in Leverage Settings → Agent.",
 			);

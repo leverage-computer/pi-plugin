@@ -1,4 +1,3 @@
-import { stripVTControlCharacters } from "node:util";
 import {
 	getMarkdownTheme,
 	keyHint,
@@ -19,6 +18,7 @@ import type {
 	SessionInbox,
 } from "@opencode/schema";
 import type { SessionEvent, SessionMessage } from "./api";
+import { clean } from "./drawers";
 import { nativeId } from "./workspace/api";
 import type { SessionInput, WorkspaceMember } from "./workspace/schema";
 
@@ -97,12 +97,6 @@ function isProjectedEvent(
 	event: SessionEvent,
 ): event is Extract<SessionEvent, { type: (typeof PROJECTED_EVENTS)[number] }> {
 	return PROJECTED_EVENTS.some((type) => type === event.type);
-}
-function plain(text: string): string {
-	return stripVTControlCharacters(text).replace(
-		/[\u0000-\u0008\u000b-\u001f\u007f]/g,
-		"",
-	);
 }
 function filePart(
 	file: NonNullable<(typeof ProtocolMessage.User.Encoded)["files"]>[number],
@@ -249,51 +243,6 @@ function partText(part: HistoryPart): string {
 				.join("\n");
 	}
 }
-function isPart(value: unknown): value is HistoryPart {
-	if (!value || typeof value !== "object") return false;
-	const part = value as Partial<HistoryPart>;
-	if (part.type === "text" || part.type === "reasoning")
-		return typeof part.text === "string";
-	if (part.type === "file")
-		return (
-			typeof part.name === "string" &&
-			typeof part.mime === "string" &&
-			(part.data === undefined || typeof part.data === "string") &&
-			(part.uri === undefined || typeof part.uri === "string")
-		);
-	return (
-		part.type === "tool" &&
-		typeof part.id === "string" &&
-		typeof part.name === "string" &&
-		typeof part.status === "string" &&
-		typeof part.input === "string" &&
-		typeof part.output === "string" &&
-		Array.isArray(part.files) &&
-		part.files.every((file) => isPart(file) && file.type === "file")
-	);
-}
-export function isHistoryEntry(value: unknown): value is HistoryEntry {
-	if (!value || typeof value !== "object") return false;
-	const entry = value as Partial<HistoryEntry>;
-	return (
-		typeof entry.sessionId === "string" &&
-		typeof entry.id === "string" &&
-		typeof entry.content === "string" &&
-		(entry.role === "user" ||
-			entry.role === "assistant" ||
-			entry.role === "system") &&
-		Array.isArray(entry.parts) &&
-		entry.parts.every(isPart) &&
-		(entry.delivery === undefined ||
-			entry.delivery === "queued" ||
-			entry.delivery === "sent" ||
-			entry.delivery === "cancelled") &&
-		typeof entry.created === "number" &&
-		Number.isFinite(entry.created) &&
-		typeof entry.revision === "number" &&
-		Number.isFinite(entry.revision)
-	);
-}
 // Server delivery states, in the words a person expects.
 const DELIVERY: Record<string, [string, ThemeColor]> = {
 	queued: ["Queued", "warning"],
@@ -351,7 +300,7 @@ export function createHistoryComponent(
 		for (const file of attachments) {
 			parent.addChild(
 				new Text(
-					theme.fg("muted", plain(`▸ ${file.name} · ${file.mime}`)),
+					theme.fg("muted", clean(`▸ ${file.name} · ${file.mime}`)),
 					0,
 					0,
 				),
@@ -367,7 +316,7 @@ export function createHistoryComponent(
 						file.mime,
 						{ fallbackColor: (text) => text },
 						{
-							filename: plain(file.name),
+							filename: clean(file.name),
 							maxWidthCells: 70,
 							maxHeightCells: 25,
 						},
@@ -377,7 +326,7 @@ export function createHistoryComponent(
 	};
 	// Pi previews ten lines of tool output until tools are expanded.
 	const preview = (value: string, color: ThemeColor): Component => {
-		const body = new Text(theme.fg(color, plain(value)), 0, 0);
+		const body = new Text(theme.fg(color, clean(value)), 0, 0);
 		return {
 			invalidate: () => body.invalidate(),
 			render(width) {
@@ -404,19 +353,19 @@ export function createHistoryComponent(
 				text,
 			),
 		);
-		const summary = plain(toolSummary(part.input));
+		const summary = clean(toolSummary(part.input));
 		// Pi titles a shell call as its command and other calls as name and target.
 		card.addChild(
 			new Text(
 				part.name === "bash" && summary
 					? theme.fg("toolTitle", theme.bold(`$ ${summary}`))
-					: `${theme.fg("toolTitle", theme.bold(plain(part.name)))}${summary ? ` ${theme.fg("accent", summary)}` : ""}`,
+					: `${theme.fg("toolTitle", theme.bold(clean(part.name)))}${summary ? ` ${theme.fg("accent", summary)}` : ""}`,
 				0,
 				0,
 			),
 		);
 		if (expanded && part.input)
-			card.addChild(new Text(theme.fg("muted", plain(part.input)), 0, 0));
+			card.addChild(new Text(theme.fg("muted", clean(part.input)), 0, 0));
 		const output = failed ? toolError(part.output) : part.output;
 		if (output) card.addChild(preview(output, failed ? "error" : "toolOutput"));
 		files(card, part.files);
@@ -425,7 +374,7 @@ export function createHistoryComponent(
 	// People get Pi's own message card, with a name line for shared sessions.
 	const person = (entry: HistoryEntry): Component => {
 		const card = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
-		const author = plain(entry.author ?? "User");
+		const author = clean(entry.author ?? "User");
 		const own = author.endsWith(" (you)");
 		const [state, tone] = DELIVERY[entry.status ?? entry.delivery ?? ""] ?? [];
 		card.addChild(
@@ -457,7 +406,7 @@ export function createHistoryComponent(
 			if (part.type === "file") files(card, [part]);
 			else if (part.type === "text")
 				card.addChild(
-					new Markdown(plain(part.text), 0, 0, getMarkdownTheme(), {
+					new Markdown(clean(part.text), 0, 0, getMarkdownTheme(), {
 						color: (text) => theme.fg("userMessageText", text),
 					}),
 				);
@@ -482,16 +431,16 @@ export function createHistoryComponent(
 							rendered.addChild(
 								entry.role === "system"
 									? new Text(
-											theme.italic(theme.fg("dim", plain(part.text))),
+											theme.italic(theme.fg("dim", clean(part.text))),
 											1,
 											0,
 										)
-									: new Markdown(plain(part.text), 1, 0, getMarkdownTheme()),
+									: new Markdown(clean(part.text), 1, 0, getMarkdownTheme()),
 							);
 						else if (part.type === "reasoning")
 							rendered.addChild(
 								expanded
-									? new Markdown(plain(part.text), 1, 0, getMarkdownTheme(), {
+									? new Markdown(clean(part.text), 1, 0, getMarkdownTheme(), {
 											color: (text) => theme.fg("thinkingText", text),
 											italic: true,
 										})
@@ -524,17 +473,10 @@ export class SharedHistory {
 	private latestLoad = 0;
 	constructor(
 		readonly sessionId: string,
-		restored: readonly unknown[] = [],
 		limits: HistoryLimits = {},
 	) {
 		this.maxEntries = limits.maxEntries ?? 200;
 		this.maxCharacters = limits.maxCharacters ?? 32 * 1024 * 1024;
-		for (const value of restored)
-			if (isHistoryEntry(value) && value.sessionId === sessionId) {
-				this.displayed.set(value.id, value);
-				if (value.delivery) this.delivery.set(value.id, value.delivery);
-			}
-		this.trim();
 	}
 	beginLoad(): number {
 		this.latestLoad = ++this.clock;

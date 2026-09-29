@@ -13,7 +13,6 @@ export class SharedSession {
 	canWrite = false;
 	revoked = false;
 	version = -1;
-	connection = "connecting";
 	readonly messages = new Map<string, SessionInput>();
 	members: WorkspaceMember[] = [];
 	private socket?: WorkspaceSocket;
@@ -41,7 +40,6 @@ export class SharedSession {
 		this.disposals.push(
 			this.socket.onEvent((event) => this.apply(event)),
 			this.socket.onState((state) => {
-				this.connection = state;
 				if (state === "live") void this.refresh().catch(this.failed);
 				this.changed();
 			}),

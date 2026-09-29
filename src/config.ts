@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { LeverageConnection } from "./api";
+import { type LeverageConnection, record } from "./api";
 
 export type ConnectionFlags = {
 	host?: string;
@@ -10,12 +10,6 @@ export type ConnectionFlags = {
 	cwd?: string;
 	directory?: string;
 };
-
-function object(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
-}
 
 function text(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -26,11 +20,11 @@ function readConfig(env: NodeJS.ProcessEnv): Record<string, unknown> {
 		env.LEVERAGE_CONFIG_DIR ??
 		join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "leverage");
 	try {
-		return object(
+		return record(
 			JSON.parse(readFileSync(join(directory, "config.json"), "utf8")),
 		);
 	} catch (error) {
-		if (object(error).code === "ENOENT") return {};
+		if (record(error).code === "ENOENT") return {};
 		throw new Error(
 			"Cannot read Leverage login settings. Run leverage login again.",
 		);
@@ -66,7 +60,7 @@ export function resolveConnection(
 			"Leverage host must be an HTTP(S) origin without a path or credentials.",
 		);
 	}
-	const profile = object(object(config.hosts)[host.origin]);
+	const profile = record(record(config.hosts)[host.origin]);
 	const workspace = configuredWorkspace ?? text(profile.workspaceSlug);
 	if (!workspace || !/^[a-zA-Z0-9_-]+$/.test(workspace)) {
 		throw new Error(

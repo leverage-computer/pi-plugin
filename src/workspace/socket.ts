@@ -12,7 +12,7 @@ export class WorkspaceSocket {
 	private heartbeat?: ReturnType<typeof setInterval>;
 	private retry?: ReturnType<typeof setTimeout>;
 	private attempt = 0;
-	status = "disconnected";
+	private status = "disconnected";
 	userId?: string;
 	constructor(
 		private readonly api: SessionClient,
@@ -164,7 +164,7 @@ export class WorkspaceSocket {
 		this.sessions.delete(sessionId);
 		this.sendIfOpen({ type: "session.unsubscribe", sessionId });
 	}
-	sendIfOpen(event: Record<string, unknown>): void {
+	private sendIfOpen(event: Record<string, unknown>): void {
 		if (this.socket?.readyState === WebSocket.OPEN)
 			this.socket.send(JSON.stringify(event));
 	}

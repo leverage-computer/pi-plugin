@@ -1,9 +1,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
-import { type LeverageConnection, SessionClient } from "./api";
-
-export type RemoteConnection = LeverageConnection & { sessionId: string };
+import { failure, record, type SessionClient, sessionId } from "./api";
 
 export function createRemoteBashOperations(
 	getRemote: () => Pick<RemoteWorkspace, "exec">,
@@ -66,20 +64,8 @@ const SIZE = { cols: 120, rows: 40 };
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_COMMAND_BYTES = 16 * 1024 * 1024;
 
-function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object"
-		? (value as Record<string, unknown>)
-		: {};
-}
-
 function quoted(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function failure(reason: unknown): Error {
-	return reason instanceof Error
-		? reason
-		: new Error("Remote command cancelled");
 }
 
 function input(bytes: Uint8Array): Buffer {
@@ -135,32 +121,16 @@ sys.stdout.buffer.flush()
 
 /** Runs manual commands through the session's public terminal API. */
 export class RemoteWorkspace {
-	private readonly api: SessionClient;
-	private readonly ownsApi: boolean;
 	private readonly sessionId: string;
-	private readonly cwd?: string;
 	private readonly running = new Set<AbortController>();
 	private closed = false;
 
-	constructor(connection: RemoteConnection, api?: SessionClient) {
-		if (!connection.sessionId) {
-			throw new Error("A Leverage session is required");
-		}
-		this.api = api ?? new SessionClient(connection);
-		this.ownsApi = api === undefined;
-		this.sessionId = connection.sessionId.startsWith("ses_")
-			? connection.sessionId
-			: `ses_${connection.sessionId}`;
-		this.cwd = connection.cwd;
-	}
-
-	async workingDirectory(): Promise<string> {
-		const result = await this.exec("pwd -P", { maxBytes: 8192 });
-		const cwd = result.output.toString("utf8").replace(/\n$/, "");
-		if (result.exitCode !== 0 || !cwd.startsWith("/") || /\p{Cc}/u.test(cwd)) {
-			throw new Error("The remote working directory could not be read");
-		}
-		return cwd;
+	constructor(
+		private readonly api: SessionClient,
+		session: string,
+		private readonly cwd?: string,
+	) {
+		this.sessionId = sessionId(session);
 	}
 
 	async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -244,8 +214,6 @@ export class RemoteWorkspace {
 					.catch(() => undefined);
 			}
 			this.running.delete(controller);
-			if (this.closed && this.ownsApi && this.running.size === 0)
-				this.api.close();
 		}
 	}
 
@@ -254,7 +222,6 @@ export class RemoteWorkspace {
 		for (const controller of this.running) {
 			controller.abort(new Error("The remote workspace was closed"));
 		}
-		if (this.ownsApi && this.running.size === 0) this.api.close();
 	}
 
 	private connectedCommand(

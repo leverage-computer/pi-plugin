@@ -7,11 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { SessionClient, type SessionInfo } from "../src/api";
-import {
-	newRemoteSession,
-	pickRemoteSession,
-	viewRemoteHistory,
-} from "../src/session-ui";
+import { viewRemoteHistory } from "../src/session-ui";
 
 const session: SessionInfo = {
 	id: "ses_shared",
@@ -51,131 +47,7 @@ function context(
 	return { hasUI: mode === "tui", mode, ui } as ExtensionContext;
 }
 
-describe("Leverage session picker", () => {
-	test("searches, pages backward and forward, and opens archived sessions", async () => {
-		const queries: URL[] = [];
-		const { client, signal } = fixture((request) => {
-			const url = new URL(request.url);
-			if (url.pathname.endsWith("/active")) return Response.json({ data: {} });
-			queries.push(url);
-			const archived = url.searchParams.get("directory")?.endsWith("/.archive");
-			return Response.json({
-				data: [
-					{ ...session, title: archived ? "Archived work" : "Shared project" },
-				],
-				cursor: url.searchParams.has("cursor") ? {} : { next: "page-2" },
-			});
-		});
-		const actions = [
-			"Search sessions",
-			"Next page",
-			"Previous page",
-			"Show archived sessions",
-			"choose",
-		];
-		const selected = await pickRemoteSession(
-			client,
-			context({
-				input: async () => "  shared work  ",
-				select: async (_title, options) => {
-					const action = actions.shift();
-					if (action === "choose")
-						return options.find((option) => option.includes("Archived work"));
-					expect(options).toContain(action!);
-					return action;
-				},
-			}),
-			{ workspace: "demo", signal },
-		);
-		expect(selected?.title).toBe("Archived work");
-		expect(queries).toHaveLength(5);
-		expect(queries[1]?.searchParams.get("search")).toBe("shared work");
-		expect(queries[2]?.searchParams.get("cursor")).toBe("page-2");
-		expect(queries[3]?.searchParams.has("cursor")).toBe(false);
-		expect(queries[4]?.searchParams.get("directory")).toBe("/demo/.archive");
-	});
-
-	test("cancelling the picker or a new title creates no remote task", async () => {
-		const methods: string[] = [];
-		const { client, signal } = fixture((request) => {
-			methods.push(request.method);
-			return Response.json(
-				request.url.endsWith("/active")
-					? { data: {} }
-					: { data: [], cursor: {} },
-			);
-		});
-		const ui = context({
-			select: async () => undefined,
-			input: async () => undefined,
-		});
-		expect(
-			await pickRemoteSession(client, ui, { workspace: "demo", signal }),
-		).toBeUndefined();
-		expect(
-			await newRemoteSession(client, ui, { workspace: "demo", signal }),
-		).toBeUndefined();
-		expect(methods.every((method) => method === "GET")).toBe(true);
-	});
-
-	test("creates a named task in the selected folder without a prompt", async () => {
-		const writes: Array<{ method: string; path: string; body: unknown }> = [];
-		const { client, signal } = fixture(async (request) => {
-			const path = new URL(request.url).pathname;
-			if (request.method === "GET")
-				return Response.json([
-					{ sandboxes: ["/demo/project", "/demo/design"] },
-				]);
-			const body: unknown = await request.json();
-			writes.push({ method: request.method, path, body });
-			if (request.method === "PATCH")
-				return new Response(null, { status: 204 });
-			const input = body as { id: string; location: { directory: string } };
-			return Response.json({ data: { ...session, ...input } });
-		});
-		const created = await newRemoteSession(
-			client,
-			context({
-				input: async () => "  Plan the changes  ",
-				select: async (_title, options) => {
-					expect(options).toContain("/demo/design");
-					return "/demo/design";
-				},
-			}),
-			{ workspace: "demo", signal },
-		);
-		expect(created?.title).toBe("Plan the changes");
-		expect(created?.location.directory).toBe("/demo/design");
-		expect(writes).toEqual([
-			{
-				method: "POST",
-				path: "/api/opencode/api/session",
-				body: { id: created?.id, location: { directory: "/demo/design" } },
-			},
-			{
-				method: "PATCH",
-				path: `/api/opencode/api/session/${created?.id}`,
-				body: { title: "Plan the changes" },
-			},
-		]);
-	});
-
-	test("cancelling folder selection creates no remote task", async () => {
-		const methods: string[] = [];
-		const { client, signal } = fixture((request) => {
-			methods.push(request.method);
-			return Response.json([{ sandboxes: ["/demo/project"] }]);
-		});
-		expect(
-			await newRemoteSession(
-				client,
-				context({ select: async () => undefined }),
-				{ title: "Draft", workspace: "demo", signal },
-			),
-		).toBeUndefined();
-		expect(methods).toEqual(["GET"]);
-	});
-
+describe("Leverage history pages", () => {
 	test("history viewer renders older and newer pages using its keyboard controls", async () => {
 		const cursors: Array<string | null> = [];
 		const { client, signal } = fixture((request) => {

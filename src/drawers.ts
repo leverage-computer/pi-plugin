@@ -18,7 +18,6 @@ export interface DrawerItem {
 	value: string;
 	label: string;
 	detail?: string;
-	disabled?: boolean;
 	current?: boolean;
 }
 
@@ -85,7 +84,7 @@ function paragraph(
 export async function chooseDrawer(
 	ctx: ExtensionContext,
 	title: string,
-	items: DrawerItem[] | (() => DrawerItem[]),
+	items: DrawerItem[],
 	signal: AbortSignal,
 	subtitle = "",
 	query = "",
@@ -98,14 +97,13 @@ export async function chooseDrawer(
 		search.setValue(query);
 		search.focused = true;
 		const values = () =>
-			(typeof items === "function" ? items() : items).filter((one) =>
+			items.filter((one) =>
 				`${one.label} ${one.detail ?? ""}`
 					.toLowerCase()
 					.includes(search.getValue().toLowerCase()),
 			);
 		const abort = () => done(undefined);
 		signal.addEventListener("abort", abort, { once: true });
-		const timer = setInterval(() => tui.requestRender(), 250);
 		return {
 			focused: true,
 			render(width) {
@@ -121,7 +119,7 @@ export async function chooseDrawer(
 				const row = (item: DrawerItem, active: boolean) => {
 					const label = clean(item.label).replace(/\s+/g, " ");
 					const detail = clean(item.detail ?? "").replace(/\s+/g, " ");
-					const line = `${active ? theme.fg("accent", "→ ") : "  "}${marks ? (item.current ? theme.fg("accent", "✓ ") : "  ") : ""}${theme.fg(item.disabled ? "dim" : active ? "accent" : "text", label)}${detail ? ` ${theme.fg("muted", detail)}` : ""}`;
+					const line = `${active ? theme.fg("accent", "→ ") : "  "}${marks ? (item.current ? theme.fg("accent", "✓ ") : "  ") : ""}${theme.fg(active ? "accent" : "text", label)}${detail ? ` ${theme.fg("muted", detail)}` : ""}`;
 					return { line, cut: visibleWidth(line) > inner, label, detail };
 				};
 				const active = rows[selected] ? row(rows[selected], true) : undefined;
@@ -181,7 +179,7 @@ export async function chooseDrawer(
 					selected = Math.max(0, selected - 10);
 				else if (matchesKey(data, "enter")) {
 					const item = values()[selected];
-					if (item && !item.disabled) done(item.value);
+					if (item) done(item.value);
 				} else {
 					search.handleInput(data);
 					selected = 0;
@@ -192,7 +190,6 @@ export async function chooseDrawer(
 				search.invalidate();
 			},
 			dispose() {
-				clearInterval(timer);
 				signal.removeEventListener("abort", abort);
 			},
 		};

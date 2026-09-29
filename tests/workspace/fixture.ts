@@ -19,17 +19,16 @@ export const hostedModel: ModelInfo = {
 	enabled: true,
 	limit: { context: 200000, output: 64000 },
 };
-export function exampleSession(): WorkspaceSession {
+// The fixture server decides read access from the session's visibility.
+export function exampleSession(): WorkspaceSession & { visibility: string } {
 	return {
 		id: SESSION,
 		title: "Shared work",
 		channelId: null,
 		visibility: "private",
-		ownerId: "owner",
 		providerFamily: "claude_code",
 		model: "hosted-model",
 		reasoningEffort: "high",
-		mode: "yolo",
 		status: "idle",
 	};
 }
@@ -121,16 +120,6 @@ export function workspaceFixture(
 				]);
 			if (path === "/api/sessions")
 				return Response.json(canRead(user) ? [session] : []);
-			if (path.endsWith("/provider-family-settings"))
-				return Response.json({
-					settings: [
-						{
-							providerFamily: "claude_code",
-							defaultModel: hostedModel.id,
-							defaultReasoningEffort: "high",
-						},
-					],
-				});
 			if (path.endsWith("/provider-access/availability"))
 				return Response.json({ claude_code: true, codex: false });
 			if (path === "/api/opencode/api/model")

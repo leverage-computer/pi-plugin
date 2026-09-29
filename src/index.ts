@@ -962,10 +962,7 @@ export default function leverage(pi: ExtensionAPI): void {
 		const operations = createRemoteBashOperations(() => {
 			writable();
 			const { client, session } = requireSession();
-			terminal ??= new RemoteWorkspace(
-				{ ...connection!, sessionId: session.id },
-				client,
-			);
+			terminal ??= new RemoteWorkspace(client, session.id, connection!.cwd);
 			return terminal;
 		});
 		return {

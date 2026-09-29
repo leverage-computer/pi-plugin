@@ -1,23 +1,18 @@
-import { isDeepStrictEqual, stripVTControlCharacters } from "node:util";
+import { isDeepStrictEqual } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type {
-	FormAnswer,
-	PermissionRequest,
-	SessionClient,
-	SessionEvent,
-	SessionForm,
+import {
+	type FormAnswer,
+	type PermissionRequest,
+	type SessionClient,
+	type SessionEvent,
+	type SessionForm,
+	sameSessionId,
 } from "./api";
+import { clean } from "./drawers";
 
 type Field = SessionForm["fields"][number];
 type Value = FormAnswer[string];
 type Interaction = "approvals" | "questions" | "inbox" | "model";
-
-function displayText(text: string): string {
-	return stripVTControlCharacters(text).replace(
-		/[\u0000-\u0008\u000b-\u001f\u007f]/g,
-		"",
-	);
-}
 
 async function choose(
 	ctx: ExtensionContext,
@@ -25,8 +20,8 @@ async function choose(
 	choices: string[],
 	options: { signal: AbortSignal },
 ): Promise<string | undefined> {
-	const labels = choices.map(displayText);
-	const picked = await ctx.ui.select(displayText(title), labels, options);
+	const labels = choices.map(clean);
+	const picked = await ctx.ui.select(clean(title), labels, options);
 	return picked === undefined ? undefined : choices[labels.indexOf(picked)];
 }
 
@@ -37,8 +32,8 @@ function input(
 	options: { signal: AbortSignal },
 ): Promise<string | undefined> {
 	return ctx.ui.input(
-		displayText(title),
-		placeholder === undefined ? undefined : displayText(placeholder),
+		clean(title),
+		placeholder === undefined ? undefined : clean(placeholder),
 		options,
 	);
 }
@@ -49,11 +44,7 @@ function confirm(
 	body: string,
 	options: { signal: AbortSignal },
 ): Promise<boolean> {
-	return ctx.ui.confirm(displayText(title), displayText(body), options);
-}
-
-function sameId(one: string, other: string): boolean {
-	return one.replace(/^ses_/, "") === other.replace(/^ses_/, "");
+	return ctx.ui.confirm(clean(title), clean(body), options);
 }
 
 function fieldError(
@@ -216,7 +207,7 @@ async function collectAnswers(
 		if (signal.aborted) return;
 		if (field.type === "external") {
 			ctx.ui.notify(
-				displayText(
+				clean(
 					`${field.title || form.title}: ${field.url}\nComplete this request in your browser.`,
 				),
 				"info",
@@ -239,7 +230,7 @@ async function collectAnswers(
 			const error = fieldError(field, field.default);
 			if (error) {
 				ctx.ui.notify(
-					displayText(`${field.title || field.key}: ${error}`),
+					clean(`${field.title || field.key}: ${error}`),
 					"warning",
 				);
 				return;
@@ -353,7 +344,7 @@ export class PendingInteractions {
 	apply(event: SessionEvent): void {
 		if (this.closed) return;
 		if (event.type === "form.created") {
-			if (!sameId(event.data.form.sessionID, this.sessionId)) return;
+			if (!sameSessionId(event.data.form.sessionID, this.sessionId)) return;
 			if (
 				this.forms.has(event.data.form.id) &&
 				!isDeepStrictEqual(this.forms.get(event.data.form.id), event.data.form)
@@ -361,7 +352,7 @@ export class PendingInteractions {
 				this.dismiss(event.data.form.id);
 			this.forms.set(event.data.form.id, event.data.form);
 		} else if (event.type === "permission.asked") {
-			if (!sameId(event.data.sessionID, this.sessionId)) return;
+			if (!sameSessionId(event.data.sessionID, this.sessionId)) return;
 			if (
 				this.permissions.has(event.data.id) &&
 				!isDeepStrictEqual(this.permissions.get(event.data.id), event.data)
@@ -369,7 +360,7 @@ export class PendingInteractions {
 				this.dismiss(event.data.id);
 			this.permissions.set(event.data.id, event.data);
 		} else if (event.type === "permission.replied") {
-			if (!sameId(event.data.sessionID, this.sessionId)) return;
+			if (!sameSessionId(event.data.sessionID, this.sessionId)) return;
 			this.resolutions.set(
 				event.data.requestID,
 				`${this.permissions.get(event.data.requestID)?.action ?? "Tool approval"} · ${event.data.reply === "reject" ? "Denied" : "Approved"}`,
@@ -385,7 +376,7 @@ export class PendingInteractions {
 			event.type === "form.replied" ||
 			event.type === "form.cancelled"
 		) {
-			if (!sameId(event.data.sessionID, this.sessionId)) return;
+			if (!sameSessionId(event.data.sessionID, this.sessionId)) return;
 			this.forms.delete(event.data.id);
 			this.dismiss(event.data.id);
 		} else return;
@@ -632,9 +623,7 @@ export class PendingInteractions {
 		);
 		if (!signal.aborted)
 			this.ctx.ui.notify(
-				displayText(
-					`Leverage model: ${model.name}${variant ? ` (${variant})` : ""}`,
-				),
+				clean(`Leverage model: ${model.name}${variant ? ` (${variant})` : ""}`),
 				"info",
 			);
 	}

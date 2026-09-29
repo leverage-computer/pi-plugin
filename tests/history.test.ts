@@ -2,11 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import type { SessionEvent, SessionMessage } from "../src/api";
-import {
-	createHistoryComponent,
-	isHistoryEntry,
-	SharedHistory,
-} from "../src/history";
+import { createHistoryComponent, SharedHistory } from "../src/history";
 import { nativeId } from "../src/workspace/api";
 
 const sessionId = "ses_shared";
@@ -211,7 +207,7 @@ describe("Shared session history", () => {
 		expect(history.entries()[0]?.content).toContain("Connection lost");
 	});
 
-	test("deduplicates live echoes and restored transcript entries", () => {
+	test("deduplicates live echoes and later history pages of the same message", () => {
 		const history = new SharedHistory(sessionId);
 		const enqueued = event("session.inbox.enqueued", {
 			sessionID: sessionId,
@@ -224,13 +220,18 @@ describe("Shared session history", () => {
 		});
 		expect(history.apply(enqueued)).toHaveLength(1);
 		expect(history.apply(enqueued)).toEqual([]);
-		const restored = new SharedHistory(sessionId, history.entries());
-		expect(restored.merge([user("msg_alex", "Alex: Hello")])).toHaveLength(1);
-		expect(restored.entries()).toHaveLength(1);
-		const changed = restored.merge([user("msg_alex", "Alex: Corrected")]);
+		expect(
+			history.merge([user("msg_alex", "Alex: Hello")], history.beginLoad()),
+		).toHaveLength(1);
+		expect(history.entries()).toHaveLength(1);
+		const changed = history.merge(
+			[user("msg_alex", "Alex: Corrected")],
+			history.beginLoad(),
+		);
 		expect(changed).toHaveLength(1);
 		expect(changed[0]?.revision).toBe(3);
-		expect(restored.entries()[0]?.content).not.toContain("Alex: Hello");
+		expect(history.entries()).toHaveLength(1);
+		expect(history.entries()[0]?.content).not.toContain("Alex: Hello");
 	});
 
 	test("keeps live updates when a stale history request finishes", () => {
@@ -333,22 +334,11 @@ describe("Shared session history", () => {
 		).toBe(true);
 	});
 
-	test("bounds the newest history and ignores invalid or unrelated restored state", () => {
-		const history = new SharedHistory(
-			sessionId,
-			[
-				null,
-				{ sessionId, id: "bad", content: 1, created: 0, revision: 1 },
-				{
-					sessionId: "ses_other",
-					id: "msg_other",
-					content: "Other session",
-					created: 0,
-					revision: 1,
-				},
-			],
-			{ maxEntries: 3, maxCharacters: 10_000 },
-		);
+	test("bounds the live history to the newest messages", () => {
+		const history = new SharedHistory(sessionId, {
+			maxEntries: 3,
+			maxCharacters: 10_000,
+		});
 		history.merge(
 			Array.from({ length: 10 }, (_, i) =>
 				user(`msg_${i}`, `Message ${i}: ${"x".repeat(1_000)}`, i),
@@ -364,10 +354,7 @@ describe("Shared session history", () => {
 				.entries()
 				.every((entry) => entry.content.includes("x".repeat(1_000))),
 		).toBe(true);
-		const content = history.entries().at(-1)?.content;
-		expect(content).toContain("Message 9");
-		expect(content).not.toContain("Other session");
-		expect(isHistoryEntry(history.entries()[0])).toBe(true);
+		expect(history.entries().at(-1)?.content).toContain("Message 9");
 	});
 
 	test("keeps full messages across a hundred-message page", () => {

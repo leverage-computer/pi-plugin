@@ -185,8 +185,6 @@ function serverFixture(
 						defaultProviderFamily: "claude_code",
 					},
 				]);
-			if (path.endsWith("/provider-family-settings"))
-				return Response.json({ settings: [] });
 			if (path.endsWith("/provider-access/availability"))
 				return Response.json({ claude_code: true, codex: false });
 			if (path.endsWith("/bootstrap")) {

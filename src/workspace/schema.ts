@@ -1,36 +1,25 @@
 import { z } from "zod";
 
 export const familySchema = z.enum(["claude_code", "codex"]);
-export const visibilitySchema = z.enum(["private", "workspace", "channel"]);
 export const memberSchema = z.object({
 	id: z.string(),
 	name: z.string().nullable(),
-	image: z.string().nullable().optional(),
 });
 export const channelSchema = z.object({
 	id: z.string(),
 	name: z.string().nullable(),
 	kind: z.string().optional(),
-	visibility: z.string().optional(),
 	defaultProviderFamily: familySchema.optional(),
-	defaultModel: z.string().nullable().optional(),
-	defaultReasoningEffort: z.string().nullable().optional(),
 });
 export const sessionSchema = z.object({
 	id: z.string(),
 	title: z.string().nullable(),
 	channelId: z.string().nullable(),
-	visibility: visibilitySchema,
-	createdBy: z.string().nullable().optional(),
-	ownerId: z.string().nullable().optional(),
 	providerFamily: familySchema,
 	model: z.string().nullable(),
 	reasoningEffort: z.string().nullable().optional(),
-	mode: z.enum(["plan", "yolo"]),
 	status: z.string(),
 	updatedAt: z.string().optional(),
-	contextWindow: z.string().nullable().optional(),
-	codexServiceTier: z.string().nullable().optional(),
 	requestedBranch: z.string().nullable().optional(),
 	repo: z.object({ fullName: z.string() }).nullable().optional(),
 });
@@ -43,7 +32,6 @@ export const inputSchema = z.object({
 	content: z.string(),
 	status: z.string(),
 	createdAt: z.string(),
-	kind: z.string().optional(),
 });
 export const bootstrapSchema = z.object({
 	session: sessionSchema,

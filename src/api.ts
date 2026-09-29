@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import {
 	OpenCodeEvent,
@@ -120,20 +119,24 @@ async function requestError(
 	});
 }
 
-function record(value: unknown): Record<string, unknown> {
+export function record(value: unknown): Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: {};
 }
-function failure(reason: unknown): Error {
+export function failure(reason: unknown): Error {
 	return reason instanceof Error
 		? reason
 		: new Error("Leverage request cancelled");
 }
-function sessionId(id: string): string {
+export function sessionId(id: string): string {
 	if (!/^(?:ses_)?[a-zA-Z0-9_-]+$/.test(id))
 		throw new Error("Invalid Leverage session ID");
 	return id.startsWith("ses_") ? id : `ses_${id}`;
+}
+// OpenCode IDs have a "ses_" prefix. Native IDs do not.
+export function sameSessionId(one: string, other: string): boolean {
+	return one.replace(/^ses_/, "") === other.replace(/^ses_/, "");
 }
 function sessionTitle(title: string): string {
 	const normalized = title.trim().replace(/\s+/g, " ");
@@ -269,19 +272,6 @@ export class SessionClient {
 		await this.renewToken(previous.replace(/^Bearer /, ""), signal);
 	}
 
-	async list(
-		options: Paging & { search?: string; directory?: string } = {},
-	): Promise<Page<SessionInfo>> {
-		const query = this.query(options);
-		query.set("parentID", "null");
-		if (options.search) query.set("search", options.search);
-		if (options.directory) query.set("directory", options.directory);
-		return page<SessionInfo>(
-			await this.json(`/api/session?${query}`, "GET", options.signal),
-			validSession,
-		);
-	}
-
 	async active(
 		signal?: AbortSignal,
 	): Promise<Record<string, { type: "running" }>> {
@@ -302,36 +292,6 @@ export class SessionClient {
 		if (!validSession(body.data))
 			throw new ProtocolError("Leverage returned an invalid session");
 		return body.data as SessionInfo;
-	}
-
-	async create(
-		options: { title?: string; directory?: string; signal?: AbortSignal } = {},
-	): Promise<SessionInfo> {
-		const title = options.title?.trim()
-			? sessionTitle(options.title)
-			: undefined;
-		const id = `ses_${randomUUID()}`;
-		const body = record(
-			await this.json("/api/session", "POST", options.signal, {
-				id,
-				location: { directory: options.directory ?? `/${this.workspace}` },
-			}),
-		);
-		if (!validSession(body.data))
-			throw new ProtocolError("Leverage returned an invalid session");
-		const created = body.data as SessionInfo;
-		if (title) {
-			try {
-				await this.rename(created.id, title, options.signal);
-			} catch (error) {
-				throw new Error(
-					`Created Leverage session ${created.id}, but its title could not be saved. Open that session to continue.`,
-					{ cause: error },
-				);
-			}
-			return { ...created, title };
-		}
-		return created;
 	}
 
 	async prompt(

@@ -62,8 +62,8 @@ export async function editDraft(
 			);
 			return;
 		}
-		const [defaults, channels, models] = await Promise.all([
-			api.defaults(signal),
+		const [providers, channels, models] = await Promise.all([
+			api.providers(signal),
 			api.channels(signal),
 			api.transport.models(signal),
 		]);
@@ -122,7 +122,7 @@ export async function editDraft(
 					one.enabled &&
 					one.status !== "deprecated" &&
 					(one.family === "codex" || one.family === "claude_code") &&
-					defaults.healthy[one.family],
+					providers[one.family],
 			);
 			const picked = await chooseDrawer(
 				ctx,

@@ -76,7 +76,7 @@ function frame(event: SessionEvent): string {
 }
 
 describe("Leverage sessions", () => {
-	test("pages sessions and transcript messages with workspace authentication", async () => {
+	test("pages transcript messages with workspace authentication", async () => {
 		const seen: URL[] = [];
 		const { client } = fixture((request) => {
 			expect(request.headers.get("authorization")).toBe("Bearer test-token");
@@ -84,17 +84,10 @@ describe("Leverage sessions", () => {
 			const url = new URL(request.url);
 			seen.push(url);
 			return Response.json({
-				data: url.pathname.endsWith("/message") ? [message] : [session],
+				data: [message],
 				cursor: url.searchParams.has("cursor") ? {} : { next: "next/+=" },
 			});
 		});
-		const listed = await client.list({
-			search: "shared task",
-			directory: "/alpha/project",
-			limit: 1,
-		});
-		expect(listed.data[0]?.title).toBe("Shared task");
-		await client.list({ cursor: listed.cursor.next });
 		const history = await client.history("task-one", {
 			limit: 1,
 			order: "desc",
@@ -102,78 +95,20 @@ describe("Leverage sessions", () => {
 		expect(history.data).toEqual([message]);
 		await client.history("ses_task-one", { cursor: history.cursor.next });
 		expect(seen.map((url) => url.pathname)).toEqual([
-			"/api/opencode/api/session",
-			"/api/opencode/api/session",
 			"/api/opencode/api/session/ses_task-one/message",
 			"/api/opencode/api/session/ses_task-one/message",
 		]);
-		expect(seen[0]?.searchParams.get("search")).toBe("shared task");
-		expect(seen[0]?.searchParams.get("directory")).toBe("/alpha/project");
+		expect(seen[0]?.searchParams.get("order")).toBe("desc");
 		expect(seen[1]?.searchParams.get("cursor")).toBe("next/+=");
-		expect(seen[2]?.searchParams.get("order")).toBe("desc");
-		expect(seen[3]?.searchParams.get("cursor")).toBe("next/+=");
 	});
-	test("creates an idle task in a chosen folder and renames without sending a prompt", async () => {
-		const requests: Array<{ method: string; path: string; body: unknown }> = [];
-		const { client } = fixture(async (request) => {
-			const body: unknown = await request.json();
-			const path = new URL(request.url).pathname;
-			requests.push({ method: request.method, path, body });
-			if (request.method === "PATCH")
-				return new Response(null, { status: 204 });
-			const created = body as { id: string; location: { directory: string } };
-			return Response.json({
-				data: { ...session, id: created.id, location: created.location },
-			});
-		});
-		const created = await client.create({
-			title: "  New\tlocal\nPi  task  ",
-			directory: "/alpha/project",
-		});
-		expect(created.title).toBe("New local Pi task");
-		expect(created.location.directory).toBe("/alpha/project");
-		expect(requests).toEqual([
-			{
-				method: "POST",
-				path: "/api/opencode/api/session",
-				body: { id: created.id, location: { directory: "/alpha/project" } },
-			},
-			{
-				method: "PATCH",
-				path: `/api/opencode/api/session/${created.id}`,
-				body: { title: "New local Pi task" },
-			},
-		]);
-	});
-	test("validates a title before creation and names an already-created task if renaming fails", async () => {
-		let requests = 0;
-		const { client } = fixture((request) => {
-			requests++;
-			return request.method === "PATCH"
-				? new Response(null, { status: 403 })
-				: Response.json({ data: session });
-		});
-		await assert.rejects(client.create({ title: "x".repeat(1000) }));
-		expect(requests).toBe(0);
-		await assert.rejects(
-			client.create({ title: "New title" }),
-			/Created Leverage session ses_task-one.*title could not be saved/,
-		);
-		expect(requests).toBe(2);
-	});
-	test("normalizes title limits before sending and preserves the server default for an empty new title", async () => {
+	test("normalizes title limits before renaming", async () => {
 		const requests: Array<{ method: string; body: unknown }> = [];
 		const { client } = fixture(async (request) => {
 			requests.push({ method: request.method, body: await request.json() });
-			return request.method === "PATCH"
-				? new Response(null, { status: 204 })
-				: Response.json({ data: session });
+			return new Response(null, { status: 204 });
 		});
 		for (const title of [" ", "\t\n", "x".repeat(81), "🙂".repeat(41)]) {
 			await assert.rejects(client.rename(session.id, title), /1 to 80/);
-		}
-		for (const title of ["x".repeat(81), "🙂".repeat(41)]) {
-			await assert.rejects(client.create({ title }), /1 to 80/);
 		}
 		expect(requests).toEqual([]);
 
@@ -181,18 +116,6 @@ describe("Leverage sessions", () => {
 		await client.rename(session.id, ` \t${boundaryTitle}\n `);
 		expect(requests).toEqual([
 			{ method: "PATCH", body: { title: boundaryTitle } },
-		]);
-		requests.length = 0;
-		const created = await client.create({ title: " \t\n " });
-		expect(created.title).toBe(session.title);
-		expect(requests).toEqual([
-			{
-				method: "POST",
-				body: {
-					id: expect.stringMatching(/^ses_/),
-					location: { directory: "/alpha" },
-				},
-			},
 		]);
 	});
 
@@ -218,13 +141,8 @@ describe("Leverage sessions", () => {
 		]);
 	});
 	test("keeps shared credentials alive after a remote task is closed", async () => {
-		const { client, connection } = fixture(() =>
-			Response.json({ data: session }),
-		);
-		const remote = new RemoteWorkspace(
-			{ ...connection, sessionId: session.id },
-			client,
-		);
+		const { client } = fixture(() => Response.json({ data: session }));
+		const remote = new RemoteWorkspace(client, session.id);
 		remote.close();
 		expect((await client.get(session.id)).id).toBe(session.id);
 	});
@@ -265,12 +183,12 @@ describe("Leverage sessions", () => {
 		const { client } = fixture(() =>
 			Response.json({ data: [{ secret: "private" }], cursor: {} }),
 		);
-		await assert.rejects(client.list(), /invalid page/);
+		await assert.rejects(client.history("task"), /invalid page/);
 		await assert.rejects(client.get("../other"), /Invalid Leverage session/);
 		await assert.rejects(client.history("task", { limit: 201 }), /page size/);
 	});
 
-	test("reports the failing endpoint and server reason without response payloads or search text", async () => {
+	test("reports the failing endpoint and server reason without response payloads or query text", async () => {
 		const { client, connection } = fixture(() =>
 			Response.json(
 				{
@@ -286,7 +204,7 @@ describe("Leverage sessions", () => {
 			),
 		);
 		await assert.rejects(
-			client.list({ search: "private-search-text" }),
+			client.history("task-one", { cursor: "private-cursor-text" }),
 			(error) => {
 				expect(error).toBeInstanceOf(ApiError);
 				const failure = error as ApiError;
@@ -322,7 +240,7 @@ describe("Leverage sessions", () => {
 						headers: { "content-type": contentType },
 					}),
 			);
-			await assert.rejects(client.list(), (error) => {
+			await assert.rejects(client.history("task-one"), (error) => {
 				expect(error).toBeInstanceOf(ApiError);
 				expect((error as Error).message).toContain("request failed (503)");
 				expect((error as Error).message).toContain("/api/opencode/api/session");

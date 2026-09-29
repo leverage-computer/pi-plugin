@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PersistentPty } from "@opencode/schema";
 import type { ServerWebSocket } from "bun";
+import { SessionClient } from "../src/api";
 import { createRemoteBashOperations, RemoteWorkspace } from "../src/remote";
 
 // A real pseudo-terminal exercises shell startup, raw bytes, and the input size limit.
@@ -42,6 +43,7 @@ finally:
 `;
 
 type FixtureOptions = {
+	cwd?: string;
 	denied?: boolean;
 	invalidTicket?: boolean;
 	disconnect?: boolean;
@@ -189,13 +191,17 @@ function serverFixture(options: FixtureOptions = {}) {
 			},
 		},
 	});
-	const remote = new RemoteWorkspace({
+	const client = new SessionClient({
 		host: server.url.origin,
 		workspace: "test-workspace",
 		token: "lev_at_test",
 		...(options.noRefresh ? {} : { refreshToken: "lev_rt_test" }),
-		sessionId: "11111111-1111-4111-8111-111111111111",
 	});
+	const remote = new RemoteWorkspace(
+		client,
+		"11111111-1111-4111-8111-111111111111",
+		options.cwd,
+	);
 	return {
 		server,
 		remote,
@@ -205,6 +211,7 @@ function serverFixture(options: FixtureOptions = {}) {
 		deleted,
 		async close() {
 			remote.close();
+			client.close();
 			for (const process of processes) process.stdin.end();
 			for (const socket of sockets) socket.terminate();
 			await server.stop(true);
@@ -445,33 +452,14 @@ describe("remote tool transport", () => {
 		expect((later as Error).message).toContain("closed");
 	});
 
-	test("discovers a quoted remote directory and rejects control characters in its name", async () => {
-		const instance = fixture();
-		const connection = {
-			host: instance.server.url.origin,
-			workspace: "test-workspace",
-			token: "test",
-			sessionId: "ses_test",
-		};
+	test("runs commands in a remote directory whose name needs shell quoting", async () => {
 		const quoted = await mkdtemp(join(tmpdir(), "pi-'$(printf injected)-"));
-		const controls = await mkdtemp(join(tmpdir(), "pi-\n"));
-		const remote = new RemoteWorkspace({ ...connection, cwd: quoted });
-		const bad = new RemoteWorkspace({ ...connection, cwd: controls });
 		try {
-			expect(await remote.workingDirectory()).toBe(quoted);
-			const error = await bad
-				.workingDirectory()
-				.catch((error: unknown) => error);
-			expect((error as Error).message).toContain(
-				"working directory could not be read",
-			);
+			const { remote } = fixture({ cwd: quoted });
+			const result = await remote.exec("pwd -P");
+			expect(result.output.toString()).toBe(`${quoted}\n`);
 		} finally {
-			remote.close();
-			bad.close();
-			await Promise.all([
-				rm(quoted, { recursive: true }),
-				rm(controls, { recursive: true }),
-			]);
+			await rm(quoted, { recursive: true });
 		}
 	});
 });
