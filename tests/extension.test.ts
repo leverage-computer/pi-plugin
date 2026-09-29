@@ -603,7 +603,8 @@ describe("Pi hosted frontend", () => {
 					throw new Error("Startup must not open a picker");
 				},
 				setWidget: (_key, value) => {
-					if (Array.isArray(value)) widgets.push(value);
+					if (typeof value === "function")
+						widgets.push(value({} as never, {} as never).render(120));
 				},
 			},
 			"tui",

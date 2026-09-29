@@ -99,7 +99,7 @@ async function terminal(
 		child.stdin.write(text);
 		await Bun.sleep(80);
 	};
-	await wait("Context Standalone", 30000);
+	await wait("Standalone · Default model", 30000);
 	return { f, wait, key, output: () => output };
 }
 
@@ -109,13 +109,13 @@ test("narrow Pi terminal sets the channel with F1 and the model with F2, keeping
 	await ui.key("\x1bOP");
 	await ui.wait("Session context");
 	await ui.key("general\r");
-	await ui.wait("Context #general");
+	await ui.wait("#general · Default model");
 	await ui.key("\x1bOQ");
 	await ui.wait("Leverage model");
 	await ui.key("Hosted\r");
 	await ui.wait("Reasoning effort");
 	await ui.key("high\r");
-	await ui.wait("Model hosted-model · high");
+	await ui.wait("#general · hosted-model / high");
 	// Typing redraws the composer line, which shows the kept draft.
 	await ui.key("!");
 	await ui.wait("Keep this draft /tmp/attachment.png!");

@@ -12,6 +12,7 @@ import {
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import {
 	type LeverageConnection,
@@ -144,33 +145,48 @@ export default function leverage(pi: ExtensionAPI): void {
 			const text = stripVTControlCharacters(value);
 			return theme ? theme.fg(color, bold ? theme.bold(text) : text) : text;
 		};
-		const pairs = (rows: string[][]) =>
-			rows
-				.map(
-					([key, label, value]) =>
-						`${paint("accent", key)} ${paint(value ? "dim" : "muted", label)}${value ? ` ${paint("text", value)}` : ""}`,
-				)
-				.join("   ");
-		if (theme)
-			ctx.ui.setWidget(
-				"leverage-keys",
-				[
-					pairs(
-						selected
-							? [
-									["F1", "Details"],
-									["F2", "Model"],
-									["F3", "Sessions"],
-									["F4", "Approvals"],
-								]
-							: [["F3", "Sessions"]],
-					),
-				],
-				{ placement: "belowEditor" },
+		const join = (parts: string[]) => parts.join(paint("dim", " · "));
+		const keys = (hints: Array<[string, string]>) =>
+			join(
+				hints.map(
+					([key, label]) => `${paint("accent", key)} ${paint("muted", label)}`,
+				),
 			);
+		// Pi indents text widgets by a column, so the terminal draws them flush with the composer.
+		const show = (
+			key: string,
+			lines: string[] | undefined,
+			placement: "aboveEditor" | "belowEditor" = "aboveEditor",
+		) => {
+			if (theme && lines)
+				ctx.ui.setWidget(
+					key,
+					() => ({
+						invalidate() {},
+						render: (width: number) =>
+							lines.flatMap((line) => wrapTextWithAnsi(line, width)),
+					}),
+					{ placement },
+				);
+			else ctx.ui.setWidget(key, lines, { placement });
+		};
+		show(
+			"leverage-keys",
+			theme && selected
+				? [
+						keys([
+							["F1", "Details"],
+							["F2", "Model"],
+							["F3", "Sessions"],
+							["F4", "Approvals"],
+						]),
+					]
+				: undefined,
+			"belowEditor",
+		);
 		const approvals = interactions?.approvalCount ?? 0;
 		const questions = interactions?.questionCount ?? 0;
-		ctx.ui.setWidget(
+		show(
 			"leverage-session",
 			selected
 				? [
@@ -215,19 +231,16 @@ export default function leverage(pi: ExtensionAPI): void {
 							: []),
 					]
 				: [
-						`${paint("accent", "◆ New Leverage session", true)}${
-							draft ? paint("dim", "  Enter creates it") : ""
-						}`,
+						paint("accent", "New Leverage session", true),
 						draft
-							? pairs([
-									["F1", "Context", draftContext],
-									[
-										"F2",
-										"Model",
+							? join([
+									paint("text", draftContext),
+									paint(
+										"text",
 										draft.model
-											? `${draft.model}${draft.reasoningEffort ? ` · ${draft.reasoningEffort}` : ""}`
-											: "Default",
-									],
+											? `${draft.model}${draft.reasoningEffort ? ` / ${draft.reasoningEffort}` : ""}`
+											: "Default model",
+									),
 								])
 							: paint(
 									draftError ? "error" : "dim",
@@ -239,6 +252,15 @@ export default function leverage(pi: ExtensionAPI): void {
 										"warning",
 										"▲ Setup not confirmed · /leverage retry continues the same session",
 									),
+								]
+							: []),
+						...(theme
+							? [
+									keys([
+										["F1", "Context"],
+										["F2", "Model"],
+										["F3", "Sessions"],
+									]),
 								]
 							: []),
 					],
@@ -762,7 +784,7 @@ export default function leverage(pi: ExtensionAPI): void {
 			render: (width) => [
 				"",
 				truncateToWidth(
-					` ${theme.bold(theme.fg("accent", "◆ Leverage"))}${theme.fg("dim", stripVTControlCharacters(connection ? `  ${connection.workspace}` : ""))}`,
+					`${theme.bold(theme.fg("accent", "◆ Leverage"))}${theme.fg("dim", stripVTControlCharacters(connection ? `  ${connection.workspace}` : ""))}`,
 					width,
 				),
 			],
