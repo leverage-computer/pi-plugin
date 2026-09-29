@@ -145,7 +145,9 @@ if the connection or terminal startup fails.
 
 | Module | Responsibility |
 | --- | --- |
-| [src/index.ts](src/index.ts) | Pi lifecycle, input interception, session synchronization, and commands |
+| [src/index.ts](src/index.ts) | Pi lifecycle, input interception, new-session drafts, keys, and commands |
+| [src/session-view.ts](src/session-view.ts) | The open session: reads, live events, sending, stopping, and compaction |
+| [src/status.ts](src/status.ts) | Status lines, the working indicator, and the footer |
 | [src/config.ts](src/config.ts) | Connection settings and local CLI profiles |
 | [src/api.ts](src/api.ts) | HTTP requests, contract validation, token renewal, and SSE |
 | [src/history.ts](src/history.ts) | Shared-message projection, rendering, and deduplication |

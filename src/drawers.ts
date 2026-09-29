@@ -44,6 +44,12 @@ export function clean(value: string): string {
 		"",
 	);
 }
+export function report(ctx: ExtensionContext, error: unknown): void {
+	ctx.ui.notify(
+		clean(error instanceof Error ? error.message : "Leverage request failed"),
+		"error",
+	);
+}
 
 // Pi's own selectors: a rule, an accent title, the content, a hint line and a rule.
 function selector(

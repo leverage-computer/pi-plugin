@@ -737,6 +737,9 @@ export class SharedHistory {
 	entries(): HistoryEntry[] {
 		return [...this.displayed.values()].sort((a, b) => a.created - b.created);
 	}
+	entry(id: string): HistoryEntry | undefined {
+		return this.displayed.get(id);
+	}
 	private publish(state: RecordState): HistoryEntry[] {
 		const input =
 			state.role === "user" ? this.authors.get(nativeId(state.id)) : undefined;
