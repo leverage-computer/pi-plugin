@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
-import { eventually, invocation, SESSION, workspaceFixture } from "./fixture";
+import {
+  eventually,
+  invocation,
+  MEMBER,
+  SESSION,
+  workspaceFixture,
+} from "./fixture";
 
 const fixtures: ReturnType<typeof workspaceFixture>[] = [];
 afterEach(async () => {
@@ -130,11 +136,30 @@ test("rename, stop and answer wait for Leverage to accept them", async () => {
   expect(await api.rename(SESSION, "  New   name ", signal)).toBe("New name");
   await rejects(api.rename(SESSION, "   ", signal), /1 to 80/);
   await api.stop(SESSION, "turn_1", signal);
-  await api.answer(SESSION, "toolu_q", { "Which branch?": "main" }, signal);
+  await api.answer(
+    SESSION,
+    "toolu_q",
+    { answers: { "Which branch?": "main" } },
+    signal,
+  );
   const stop = f.frames.find((one) => one.type === "session.stop")!;
   expect(stop.turnId).toBe("turn_1");
   const answer = f.frames.find((one) => one.type === "session.answer")!;
   expect(answer.answers).toEqual({ "Which branch?": "main" });
+});
+
+test("archive and restore wait for Leverage to apply them, and report a refusal", async () => {
+  const f = fixture();
+  const api = f.client();
+  const signal = new AbortController().signal;
+  await api.archive(SESSION, signal);
+  expect(f.session.archivedAt).toEqual(expect.any(String));
+  await api.unarchive(SESSION, signal);
+  expect(f.session.archivedAt).toBeNull();
+  const viewer = fixture();
+  viewer.session.visibility = "workspace";
+  const readOnly = viewer.client(MEMBER);
+  await rejects(readOnly.archive(SESSION, signal), /Only writers/);
 });
 
 test("reads approvals, the queue and the model catalog, and sends a decision", async () => {

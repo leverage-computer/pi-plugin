@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveConnection } from "../src/config";
+import {
+  rememberedModel,
+  rememberModel,
+  resolveConnection,
+} from "../src/config";
 
 const directories: string[] = [];
 function settings(config?: unknown) {
@@ -17,6 +21,24 @@ afterEach(() => {
   for (const directory of directories.splice(0)) {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+describe("remembered model", () => {
+  test("keeps the last pick per workspace beside the login, and survives a bad file", () => {
+    const env = settings();
+    const acme = { host: "https://app.example", workspace: "acme" };
+    const other = { host: "https://app.example", workspace: "other" };
+    expect(rememberedModel(acme, env)).toEqual({});
+    rememberModel(acme, { model: "sonnet", reasoningEffort: "high" }, env);
+    rememberModel(other, { providerFamily: "codex" }, env);
+    expect(rememberedModel(acme, env)).toEqual({
+      model: "sonnet",
+      reasoningEffort: "high",
+    });
+    expect(rememberedModel(other, env)).toEqual({ providerFamily: "codex" });
+    writeFileSync(join(env.LEVERAGE_CONFIG_DIR, "pi.json"), "{broken");
+    expect(rememberedModel(acme, env)).toEqual({});
+  });
 });
 
 describe("Leverage connection settings", () => {

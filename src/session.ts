@@ -63,6 +63,10 @@ export const sessionLinkSchema = z.object({
 
 export type SessionLink = z.infer<typeof sessionLinkSchema>;
 
+// Images Pi can draw, and the most it reads for one.
+const IMAGE_TYPE = /^image\/(png|jpeg|gif|webp)$/;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
 // A transcript position past any real one, so the first page is the newest.
 const NEWEST = 2 ** 31 - 1;
 
@@ -248,6 +252,8 @@ export class SessionView {
   readonly signal: AbortSignal;
   private readonly controller = new AbortController();
   private readonly displayed = new Set<string>();
+  // Attached images already asked for, by address.
+  private readonly images = new Set<string>();
   private closed = false;
   private sending = false;
   private stopping = false;
@@ -309,6 +315,18 @@ export class SessionView {
       ? ` → ${this.nextModel.model}${this.nextModel.reasoningEffort ? ` • ${this.nextModel.reasoningEffort}` : ""}`
       : "";
     return `${current}${next}`;
+  }
+
+  // How full the model's context is, the way Pi's own footer says it.
+  get usage(): string {
+    const { contextUsedTokens: used, contextWindowTokens: window } =
+      this.session;
+    if (!used || !window) {
+      return "";
+    }
+    const size =
+      window >= 1000 ? `${Math.round(window / 1000)}k` : String(window);
+    return `${((used / window) * 100).toFixed(1)}%/${size}`;
   }
 
   /** Reads the session, then follows it live until the view closes. */
@@ -449,6 +467,7 @@ export class SessionView {
       this.session = session;
     }
     this.display(entries);
+    this.fetchImages(entries);
     this.interactions?.sync();
     this.complete();
     this.hooks.changed();
@@ -470,6 +489,38 @@ export class SessionView {
     void workspace.markRead(this.session.id, this.signal);
     this.hooks.changed();
     this.hooks.opened();
+  }
+
+  // An attached image comes from Leverage once, then shows in its card.
+  private fetchImages(entries: HistoryEntry[]): void {
+    for (const entry of entries) {
+      for (const part of entry.parts) {
+        if (part.type !== "file" || part.data || !part.uri) {
+          continue;
+        }
+        if (!IMAGE_TYPE.test(part.mime) || !part.uri.startsWith("/api/")) {
+          continue;
+        }
+        if (this.images.has(part.uri)) {
+          continue;
+        }
+        const uri = part.uri;
+        this.images.add(uri);
+        void api
+          .bytes(`${uri}?display=1`, this.signal, MAX_IMAGE_BYTES)
+          .then(({ data }) =>
+            this.update(
+              this.shared.history.fill(
+                uri,
+                Buffer.from(data).toString("base64"),
+              ),
+            ),
+          )
+          .catch(() => {
+            // The card keeps its file name when the image cannot be read.
+          });
+      }
+    }
   }
 
   // Adds a Pi entry for each new card. The entry renders the live card.

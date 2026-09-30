@@ -29,6 +29,9 @@ type Session = {
   events: TranscriptRow[];
   inputs: SessionInput[];
   approvals: Invocation[];
+  // Files the agent made, by path, and what it changed in the repository.
+  outputs: Record<string, string>;
+  changes: Array<{ path: string; patch: string }>;
   version: number;
   stopped: boolean;
 };
@@ -112,6 +115,8 @@ function addSession(options: {
     events: [],
     inputs: [],
     approvals: [],
+    outputs: {},
+    changes: [],
     version: 0,
     stopped: false,
   };
@@ -155,7 +160,22 @@ function update(session: Session, patch: Partial<WorkspaceSession>): void {
     turnId: session.head.turnId ?? null,
     version: session.version,
     archivedAt: session.head.archivedAt ?? null,
+    contextUsedTokens: session.head.contextUsedTokens ?? null,
+    contextWindowTokens: session.head.contextWindowTokens ?? null,
   });
+}
+
+// A tool call and its result, finished at once.
+function tool(
+  session: Session,
+  name: string,
+  input: Record<string, unknown>,
+  content: string,
+  extra: Partial<TranscriptRow> = {},
+): void {
+  const toolUseId = `toolu_${randomUUID()}`;
+  emit(session, "tool_call", { toolUseId, name, input }, extra);
+  emit(session, "tool_result", { toolUseId, content }, extra);
 }
 
 // Streams assistant text word by word, then settles it as one finished row.
@@ -194,7 +214,7 @@ async function say(session: Session, text: string): Promise<void> {
 // Runs a command, streaming its output while it runs.
 async function run(session: Session, command: string, output: string) {
   const toolUseId = `toolu_${randomUUID()}`;
-  emit(session, "tool_call", { toolUseId, name: "bash", input: { command } });
+  emit(session, "tool_call", { toolUseId, name: "Bash", input: { command } });
   let offset = 0;
   for (const line of output.split("\n")) {
     const chunk = `${line}\n`;
@@ -275,6 +295,17 @@ async function answer(session: Session, prompt: string): Promise<void> {
     }
   } else {
     await say(session, "Let me run the checkout tests first.");
+    const todos = (tests: string, payments: string) => ({
+      todos: [
+        { content: "Run the checkout tests", status: tests },
+        {
+          content: "Check whether the change touches payments",
+          activeForm: "Checking the payment code",
+          status: payments,
+        },
+      ],
+    });
+    tool(session, "TodoWrite", todos("in_progress", "pending"), "");
     await sleep(400);
     if (session.stopped) {
       return;
@@ -284,6 +315,18 @@ async function answer(session: Session, prompt: string): Promise<void> {
       "bun test tests/checkout.test.ts",
       "✓ adds an item to the cart\n✓ applies a discount code\n✓ charges the saved card\n\n 3 pass\n 0 fail",
     );
+    await sleep(500);
+    tool(
+      session,
+      "Grep",
+      { pattern: "payments", path: "src/cart" },
+      "No matches",
+    );
+    tool(session, "TodoWrite", todos("completed", "completed"), "");
+    update(session, {
+      contextUsedTokens: 41_200,
+      contextWindowTokens: 200_000,
+    });
     await say(
       session,
       "All three checkout tests pass. This change does not touch payments, so it is safe to merge.",
@@ -301,6 +344,18 @@ function seed(): void {
     repo: "acme/storefront",
     updated: 95,
   });
+  flaky.outputs = {
+    "flaky-test-report.md":
+      "# Flaky checkout test\n\nThe test waited a fixed 200 ms for the payment mock.\nUnder load the mock answered later, so the check ran too early.\n\n## Fix\n\nWait for the mock's ready event instead.\n\n## Proof\n\n200 runs in a row pass.",
+    "runs.csv": "run,result\n1,pass\n2,pass\n3,pass",
+  };
+  flaky.changes = [
+    {
+      path: "tests/checkout.test.ts",
+      patch:
+        "@@ -12,3 +12,3 @@\n   await cart.checkout();\n-  await sleep(200);\n+  await mock.ready();\n   expect(mock.charged).toBe(true);",
+    },
+  ];
   const asked = randomUUID();
   flaky.inputs.push({
     uuid: asked,
@@ -321,6 +376,17 @@ function seed(): void {
         "The checkout test fails about one run in ten. Can you find out why?",
     },
     { authorId: "grace", sourceInputUuids: [asked], createdAt: minutesAgo(99) },
+  );
+  tool(
+    flaky,
+    "Edit",
+    {
+      file_path: "tests/checkout.test.ts",
+      old_string: "  await sleep(200);\n  expect(mock.charged).toBe(true);",
+      new_string: "  await mock.ready();\n  expect(mock.charged).toBe(true);",
+    },
+    "The file was updated",
+    { createdAt: minutesAgo(98) },
   );
   emit(
     flaky,
@@ -411,10 +477,86 @@ function route(request: Request, url: URL, body: unknown) {
   if (path.endsWith("/queue")) {
     return Response.json({ queuedCount: 0, messages: [] });
   }
+  // File routes first: "/files/read" also ends in "/read".
+  const file = files(session, url);
+  if (file) {
+    return file;
+  }
   if (path.endsWith("/read")) {
     return Response.json({ readState: {} });
   }
   void request;
+  return undefined;
+}
+
+// The session's outputs folder and repository changes, as the files panel reads them.
+function files(session: Session, url: URL): Response | undefined {
+  const path = url.pathname;
+  const file = url.searchParams.get("path") ?? "";
+  if (path.endsWith("/files/resources")) {
+    return Response.json({
+      resources: [
+        {
+          resourceId: "outputs",
+          kind: "task_workspace",
+          mountPath: "/work/outputs",
+          isWorkingRoot: true,
+        },
+      ],
+    });
+  }
+  if (path.endsWith("/files/tree")) {
+    return Response.json({
+      path: "",
+      entries: Object.entries(session.outputs).map(([name, text]) => ({
+        name,
+        path: name,
+        type: "file",
+        size: text.length,
+      })),
+    });
+  }
+  if (path.endsWith("/files/read")) {
+    return Response.json({
+      path: file,
+      name: file,
+      byteSize: session.outputs[file]?.length ?? 0,
+      isBinary: false,
+      tooLarge: false,
+      content: session.outputs[file] ?? "",
+    });
+  }
+  if (path.endsWith("/files/download")) {
+    return new Response(session.outputs[file] ?? "");
+  }
+  if (path.endsWith("/file-sources")) {
+    return Response.json({
+      working: session.head.status !== "idle",
+      sources: session.changes.length
+        ? [
+            {
+              resourceId: "storefront",
+              kind: "repository",
+              label: "acme/storefront",
+              branch: "leverage/fix-flaky-checkout",
+              unpublished: 0,
+              changes: session.changes.map((one) => ({
+                path: one.path,
+                state: "modified",
+                additions: 1,
+                deletions: 1,
+                patch: one.patch,
+              })),
+              publication: {
+                number: 128,
+                url: "https://github.com/acme/storefront/pull/128",
+                state: "open",
+              },
+            },
+          ]
+        : [],
+    });
+  }
   return undefined;
 }
 

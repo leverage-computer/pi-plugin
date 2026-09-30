@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename } from "node:path";
 import {
   CustomEditor,
   type ExtensionAPI,
@@ -8,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { api, sessionId } from "./api";
-import { resolveConnection } from "./config";
+import { rememberedModel, rememberModel, resolveConnection } from "./config";
 import { chooseDrawer, clean, report, textDrawer } from "./drawers";
 import {
   createHistoryComponent,
@@ -30,6 +33,11 @@ import {
 } from "./session";
 import { BorderStatus, footerLines, statusLines } from "./status";
 import { workspace } from "./workspace/api";
+import {
+  describeChanges,
+  describeConnectors,
+  filesDrawer,
+} from "./workspace/files";
 import type { SessionDraft, WorkspaceSession } from "./workspace/schema";
 import { contextName, editDraft, sessionsDrawer } from "./workspace/ui";
 
@@ -55,6 +63,8 @@ const PI_COMMANDS: Record<string, string> = {
   "/resume": "sessions",
   "/new": "new",
   "/compact": "compact",
+  "/name": "rename",
+  "/tree": "history",
 };
 // These commands use the open view as it is. The others reconnect after a lost connection.
 const VIEW_COMMANDS = new Set([
@@ -68,6 +78,53 @@ const VIEW_COMMANDS = new Set([
 // Pi creates a new extension instance when it switches sessions.
 const composerDrafts = new Map<string, string>();
 let nextDraft: Partial<SessionDraft> | undefined;
+
+// Image types Leverage shows, by file extension.
+const IMAGE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+// An absolute or home path to an image. Dragged files escape their spaces.
+const IMAGE_PATH =
+  /(?<=^|\s)(?:~|\/)(?:\\ |[^\s])+\.(?:png|jpe?g|gif|webp)(?=\s|$)/gi;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Pi pastes a clipboard image, or a dragged file, as a path on this machine.
+ * Leverage cannot read this machine, so each image that exists goes with the
+ * message and its path leaves the text.
+ */
+async function localImages(
+  text: string,
+): Promise<{ text: string; files: PromptFile[] }> {
+  const files: PromptFile[] = [];
+  let rest = text;
+  for (const match of text.matchAll(IMAGE_PATH)) {
+    const written = match[0];
+    const path = written.replace(/\\ /g, " ").replace(/^~(?=\/)/, homedir());
+    const info = await stat(path).catch(() => undefined);
+    if (!info?.isFile()) {
+      continue;
+    }
+    if (info.size > MAX_IMAGE_BYTES) {
+      continue;
+    }
+    const extension = path.split(".").pop()?.toLowerCase() ?? "";
+    files.push({
+      filename: basename(path),
+      contentType: IMAGE_TYPES[extension] ?? "application/octet-stream",
+      data: (await readFile(path)).toString("base64"),
+    });
+    rest = rest.replace(
+      rest.includes(` ${written}`) ? ` ${written}` : written,
+      "",
+    );
+  }
+  return { text: rest.trim(), files };
+}
 
 type Interaction = "approvals" | "questions" | "inbox" | "model";
 type Command = (
@@ -338,18 +395,20 @@ export default function leverage(pi: ExtensionAPI): void {
     ctx: ExtensionContext,
     queue = false,
   ) => {
-    const files = event.images?.map(
+    const given = (event.images ?? []).map(
       (image, index): PromptFile => ({
         filename: `image-${index + 1}.${image.mimeType.split("/")[1] || "png"}`,
         contentType: image.mimeType,
         data: image.data,
       }),
     );
+    const pasted = await localImages(event.text);
+    const files = [...given, ...pasted.files];
     // A message sent while the agent works steers that turn. Idle, it starts one.
     const prompt: Prompt = {
       id: randomUUID(),
-      text: event.text,
-      ...(files?.length ? { files } : {}),
+      text: pasted.text,
+      ...(files.length ? { files } : {}),
       delivery: queue || !view?.running ? "queue" : "send",
     };
     if (view) {
@@ -388,6 +447,11 @@ export default function leverage(pi: ExtensionAPI): void {
     status(ctx);
     try {
       const id = await workspace.create(draft, lifetime.signal);
+      rememberModel(api.connection, {
+        providerFamily: draft.providerFamily,
+        model: draft.model,
+        reasoningEffort: draft.reasoningEffort,
+      });
       const session = await workspace.session(id, lifetime.signal);
       if (opening !== generation) {
         return;
@@ -424,8 +488,26 @@ export default function leverage(pi: ExtensionAPI): void {
     });
     const overrides = nextDraft;
     nextDraft = undefined;
-    const loaded: SessionDraft = { ...workspace.draft(), ...overrides };
+    const loaded: SessionDraft = {
+      ...workspace.draft(),
+      ...rememberedModel(api.connection),
+      ...overrides,
+    };
     draftLoading = (async () => {
+      // A remembered model may have left the catalog. Then the default applies.
+      if (loaded.model) {
+        const models = await workspace.models(lifetime.signal);
+        const kept = models.find((one) => one.id === loaded.model);
+        if (!kept) {
+          loaded.model = undefined;
+          loaded.reasoningEffort = undefined;
+        } else if (
+          loaded.reasoningEffort &&
+          !kept.reasoningEfforts.includes(loaded.reasoningEffort)
+        ) {
+          loaded.reasoningEffort = undefined;
+        }
+      }
       const channels =
         loaded.context.type === "channel" || api.connection.directory
           ? await workspace.channels(lifetime.signal)
@@ -645,6 +727,59 @@ export default function leverage(pi: ExtensionAPI): void {
     approvals: () => showInteraction("approvals"),
     questions: () => showInteraction("questions"),
     inbox: () => showInteraction("inbox"),
+    files: async (ctx) => {
+      const current = requireSession();
+      await filesDrawer(ctx, current.session.id, current.signal);
+    },
+    outputs: async (ctx) => {
+      const current = requireSession();
+      await filesDrawer(ctx, current.session.id, current.signal, "outputs");
+    },
+    changes: async (ctx) => {
+      const current = requireSession();
+      const sources = await workspace.fileSources(
+        current.session.id,
+        current.signal,
+      );
+      await textDrawer(ctx, {
+        title: "Changes",
+        read: () => describeChanges(sources),
+        signal: current.signal,
+      });
+    },
+    connectors: async (ctx) => {
+      const { connectors } = await workspace.connectors(lifetime.signal);
+      await textDrawer(ctx, {
+        title: "Connections",
+        read: () => describeConnectors(connectors),
+        signal: lifetime.signal,
+      });
+    },
+    // A skill runs as a message. Claude takes it as a command; Codex as words.
+    skills: async (ctx) => {
+      const current = requireSession(true);
+      const skills = current.shared.skills;
+      if (!skills.length) {
+        throw new Error("This session's folder has no skills.");
+      }
+      const picked = await chooseDrawer(ctx, {
+        title: "Skills",
+        items: skills.map((one) => ({
+          value: one.name,
+          label: `/${one.name}`,
+          detail: one.description,
+        })),
+        signal: lifetime.signal,
+      });
+      if (!picked) {
+        return;
+      }
+      ctx.ui.setEditorText(
+        current.session.providerFamily === "codex"
+          ? `Use the "${picked}" skill. `
+          : `/${picked} `,
+      );
+    },
     history: async (ctx) => {
       const current = requireSession();
       const { session, signal } = current;
@@ -790,6 +925,7 @@ export default function leverage(pi: ExtensionAPI): void {
             .join(" • "),
           view?.stream ?? stream,
           view?.model ?? "",
+          view?.usage,
         ),
     }));
     try {
@@ -854,6 +990,17 @@ export default function leverage(pi: ExtensionAPI): void {
     }
     return { cancel: true };
   });
+  // A Leverage session has one line of history, so Pi's tree has nowhere to go.
+  pi.on("session_before_tree", (_event, ctx) => {
+    if (!active) {
+      return;
+    }
+    ctx.ui.notify(
+      "Leverage sessions have one history. Use /leverage history to read it.",
+      "info",
+    );
+    return { cancel: true };
+  });
   pi.on("session_before_fork", (_event, ctx) => {
     if (!active) {
       return;
@@ -882,7 +1029,7 @@ export default function leverage(pi: ExtensionAPI): void {
   });
   pi.registerCommand("leverage", {
     description:
-      "Open Leverage: new, sessions, settings, approvals, history, stop, queue, model, exit",
+      "Open Leverage: new, sessions, files, outputs, changes, approvals, skills, history, model, exit",
     handler: async (args, ctx) => {
       const opening = generation;
       dialogCount++;
@@ -899,7 +1046,7 @@ export default function leverage(pi: ExtensionAPI): void {
           : undefined;
         if (!command) {
           throw new Error(
-            "Use /leverage sessions, new, open, history, stop, queue, approvals, questions, inbox, model, compact, rename, archive, restore, or exit.",
+            "Use /leverage sessions, new, open, history, files, outputs, changes, connectors, skills, stop, queue, approvals, questions, inbox, model, compact, rename, archive, restore, or exit.",
           );
         }
         await command(ctx, words, opening);

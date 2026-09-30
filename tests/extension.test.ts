@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -133,13 +133,21 @@ async function load(
 function leverage(extra?: Parameters<typeof workspaceFixture>[0]) {
   const f = workspaceFixture(extra);
   const previousToken = process.env.LEVERAGE_TOKEN;
+  const previousConfig = process.env.LEVERAGE_CONFIG_DIR;
   // The fixture treats the token as the user, and the owner can write.
   process.env.LEVERAGE_TOKEN = "owner";
+  // Remembered model picks stay in a scratch folder, not the real login's.
+  process.env.LEVERAGE_CONFIG_DIR = temporaryDirectory();
   disposals.push(async () => {
     if (previousToken === undefined) {
       delete process.env.LEVERAGE_TOKEN;
     } else {
       process.env.LEVERAGE_TOKEN = previousToken;
+    }
+    if (previousConfig === undefined) {
+      delete process.env.LEVERAGE_CONFIG_DIR;
+    } else {
+      process.env.LEVERAGE_CONFIG_DIR = previousConfig;
     }
     await f.close();
   });
@@ -372,6 +380,54 @@ describe("Pi hosted frontend", () => {
     expect(session.isStreaming).toBe(false);
     expect(f.sent("session.message")).toHaveLength(2);
   }, 15000);
+
+  test("an attached image is read from Leverage and drawn in its card", async () => {
+    const f = leverage((request) =>
+      new URL(request.url).pathname === "/api/uploads/k1"
+        ? new Response(Buffer.from("png-bytes"), {
+            headers: { "content-type": "image/png" },
+          })
+        : undefined,
+    );
+    f.emit("user", {
+      content: "See the screenshot",
+      attachments: [
+        {
+          filename: "shot.png",
+          contentType: "image/png",
+          url: "/api/uploads/k1",
+        },
+      ],
+    });
+    const runner = await load();
+    f.configure(runner, SESSION);
+    await runner.emit({ type: "session_start", reason: "startup" });
+    await eventually(() =>
+      f.requests.some((request) => request.path === "/api/uploads/k1"),
+    );
+    expect(transcript(runner)).toContain("shot.png");
+  });
+
+  test("an image Pi pasted as a local path goes with the message", async () => {
+    const f = leverage();
+    const runner = await load();
+    f.configure(runner, SESSION);
+    await runner.emit({ type: "session_start", reason: "startup" });
+    const image = join(temporaryDirectory(), "pi-clipboard-1.png");
+    writeFileSync(image, Buffer.from("hello"));
+    await runner.emitInput(
+      `What is in ${image} and /tmp/missing-image.png?`,
+      undefined,
+      "interactive",
+    );
+    expect(f.uploads).toEqual([
+      { id: expect.any(String), bytes: 5, completed: true },
+    ]);
+    expect(f.sent("session.message")[0]).toMatchObject({
+      content: "What is in and /tmp/missing-image.png?",
+      attachmentIds: [f.uploads[0]?.id],
+    });
+  });
 
   test("Pi stays itself until /leverage opens a view", async () => {
     const f = leverage();

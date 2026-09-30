@@ -9,7 +9,13 @@ import {
   bootstrapSchema,
   type Channel,
   channelSchema,
+  connectorsSchema,
   familySchema,
+  fileReadSchema,
+  fileResourcesSchema,
+  fileSearchSchema,
+  fileSourcesSchema,
+  fileTreeSchema,
   type HistoryPage,
   type HostedModel,
   historyPageSchema,
@@ -32,6 +38,9 @@ import {
   type WorkspaceSession,
 } from "./schema";
 import { WorkspaceSocket } from "./socket";
+
+// The most a download reads into memory before it is saved.
+const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 
 const workspaceList = z.array(z.object({ id: z.string(), slug: z.string() }));
 
@@ -204,6 +213,103 @@ export class WorkspaceClient {
       signal,
     );
     return catalog.models;
+  }
+
+  // A session's files. A person asked, so each read may wake the sandbox.
+  fileResources(sessionId: string, signal?: AbortSignal) {
+    return this.read(
+      `/api/sessions/${encodeURIComponent(sessionId)}/files/resources`,
+      fileResourcesSchema,
+      signal,
+    );
+  }
+
+  fileTree(
+    sessionId: string,
+    place: { resourceId: string; path: string; pageToken?: string },
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({
+      path: place.path,
+      resource_id: place.resourceId,
+      wake: "1",
+      ...(place.pageToken ? { page_token: place.pageToken } : {}),
+    });
+    return this.read(
+      `/api/sessions/${encodeURIComponent(sessionId)}/files/tree?${query}`,
+      fileTreeSchema,
+      signal,
+    );
+  }
+
+  readFile(
+    sessionId: string,
+    place: { resourceId: string; path: string },
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({
+      path: place.path,
+      resource_id: place.resourceId,
+      wake: "1",
+    });
+    return this.read(
+      `/api/sessions/${encodeURIComponent(sessionId)}/files/read?${query}`,
+      fileReadSchema,
+      signal,
+    );
+  }
+
+  searchFiles(
+    sessionId: string,
+    place: { resourceId: string; query: string },
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({
+      q: place.query,
+      resource_id: place.resourceId,
+      limit: "50",
+      wake: "1",
+    });
+    return this.read(
+      `/api/sessions/${encodeURIComponent(sessionId)}/files/search?${query}`,
+      fileSearchSchema,
+      signal,
+    );
+  }
+
+  downloadFile(
+    sessionId: string,
+    place: { resourceId: string; path: string },
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({
+      path: place.path,
+      resource_id: place.resourceId,
+      wake: "1",
+    });
+    return api.bytes(
+      `/api/sessions/${encodeURIComponent(sessionId)}/files/download?${query}`,
+      signal,
+      MAX_DOWNLOAD_BYTES,
+    );
+  }
+
+  /** What the session changed, per source, with any pull request. */
+  fileSources(sessionId: string, signal?: AbortSignal) {
+    return this.read(
+      `/api/sessions/${encodeURIComponent(sessionId)}/file-sources`,
+      fileSourcesSchema,
+      signal,
+    );
+  }
+
+  async connectors(signal?: AbortSignal) {
+    const workspaceId = await this.workspaceId(signal);
+    return this.read(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/connectors`,
+      connectorsSchema,
+      signal,
+    );
   }
 
   /** The session, its recent transcript, inputs and pending approvals. */
@@ -473,7 +579,10 @@ export class WorkspaceClient {
   async answer(
     sessionId: string,
     toolUseId: string,
-    answers: Record<string, string>,
+    reply: {
+      answers: Record<string, string>;
+      annotations?: Record<string, { notes?: string }>;
+    },
     signal: AbortSignal,
   ): Promise<void> {
     const clientRequestId = randomUUID();
@@ -483,7 +592,7 @@ export class WorkspaceClient {
         type: "session.answer",
         sessionId,
         toolUseId,
-        answers,
+        ...reply,
         clientRequestId,
       },
       (one) =>
@@ -500,18 +609,33 @@ export class WorkspaceClient {
     });
   }
 
-  async archive(sessionId: string, signal?: AbortSignal): Promise<void> {
-    await (await this.socket(signal)).post({
-      type: "session.archive",
-      sessionId,
-    });
+  archive(sessionId: string, signal: AbortSignal): Promise<void> {
+    return this.shelve(sessionId, true, signal);
   }
 
-  async unarchive(sessionId: string, signal?: AbortSignal): Promise<void> {
-    await (await this.socket(signal)).post({
-      type: "session.unarchive",
-      sessionId,
-    });
+  unarchive(sessionId: string, signal: AbortSignal): Promise<void> {
+    return this.shelve(sessionId, false, signal);
+  }
+
+  // Leverage confirms an archive only through the session update it causes.
+  private async shelve(
+    sessionId: string,
+    archived: boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const socket = await this.socket(signal);
+    await socket.request(
+      {
+        type: archived ? "session.archive" : "session.unarchive",
+        sessionId,
+      },
+      (one) =>
+        one.type === "error" ||
+        (one.type === "session.updated" &&
+          one.sessionId === sessionId &&
+          !!one.archivedAt === archived),
+      signal,
+    );
   }
 
   async cancelQueued(

@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { api } from "../api";
 import { chooseDrawer, type DrawerItem, textDrawer } from "../drawers";
 import { workspace } from "./api";
 import type { Channel, SessionDraft, WorkspaceSession } from "./schema";
@@ -186,43 +187,96 @@ export async function editDraft(
   }
 }
 
+// Frames that change which sessions the picker lists, or how.
+const LIST_CHANGES = new Set([
+  "session.created",
+  "session.updated",
+  "session.list.changed",
+  "session.access_revoked",
+  "session.rename.accepted",
+]);
+
+function sessionItems(
+  sessions: WorkspaceSession[],
+  channels: Channel[],
+): DrawerItem[] {
+  return sessions
+    .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+    .map((one) => ({
+      value: one.id,
+      label: one.title || "Untitled session",
+      detail: [
+        placeName(one, channels),
+        one.status.charAt(0).toUpperCase() + one.status.slice(1),
+        one.model ?? one.providerFamily,
+        ago(one.updatedAt ?? undefined),
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    }));
+}
+
+/**
+ * Every session the person can open, newest first and updated live. With
+ * --leverage-directory it starts at that channel. Tab offers a session's
+ * own actions.
+ */
 export async function sessionsDrawer(
   ctx: ExtensionContext,
   signal: AbortSignal,
   query = "",
 ): Promise<string | undefined> {
   let archived = false;
+  let scoped = true;
+  const socket = await workspace.socket(signal);
+  void socket.connect().catch(() => {});
   while (!signal.aborted) {
-    const [sessions, channels] = await Promise.all([
-      workspace.sessions(signal, archived),
-      workspace.channels(signal),
-    ]);
+    const channels = await workspace.channels(signal);
+    const home = channels.find(
+      (one) =>
+        api.connection.directory === `/${api.connection.workspace}/${one.name}`,
+    );
+    const listed = async () => {
+      const sessions = await workspace.sessions(signal, archived);
+      return sessions.filter(
+        (one) => !scoped || !home || one.channelId === home.id,
+      );
+    };
+    const fixed = (): DrawerItem[] => [
+      { value: "new", label: "+ New session" },
+      { value: "refresh", label: "Refresh" },
+      {
+        value: "archive",
+        label: archived ? "Show active sessions" : "Show archived sessions",
+      },
+      ...(home
+        ? [
+            {
+              value: "scope",
+              label: scoped ? "Show every channel" : `Show only #${home.name}`,
+            },
+          ]
+        : []),
+    ];
+    let sessions = await listed();
     const picked = await chooseDrawer(ctx, {
       title: "Leverage sessions",
-      items: [
-        { value: "new", label: "+ New session" },
-        { value: "refresh", label: "Refresh" },
-        {
-          value: "archive",
-          label: archived ? "Show active sessions" : "Show archived sessions",
-        },
-        ...sessions
-          .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
-          .map((one) => ({
-            value: one.id,
-            label: one.title || "Untitled session",
-            detail: [
-              placeName(one, channels),
-              one.status.charAt(0).toUpperCase() + one.status.slice(1),
-              one.model ?? one.providerFamily,
-              ago(one.updatedAt ?? undefined),
-            ]
-              .filter(Boolean)
-              .join(" · "),
-          })),
-      ],
+      items: [...fixed(), ...sessionItems(sessions, channels)],
       signal,
       query,
+      more: "actions",
+      live: (update) =>
+        socket.onEvent((event) => {
+          if (!LIST_CHANGES.has(event.type)) {
+            return;
+          }
+          void listed()
+            .then((next) => {
+              sessions = next;
+              update([...fixed(), ...sessionItems(next, channels)]);
+            })
+            .catch(() => {});
+        }),
     });
     if (picked === "refresh") {
       continue;
@@ -231,6 +285,62 @@ export async function sessionsDrawer(
       archived = !archived;
       continue;
     }
+    if (picked === "scope") {
+      scoped = !scoped;
+      continue;
+    }
+    if (picked?.startsWith("more:")) {
+      const session = sessions.find((one) => `more:${one.id}` === picked);
+      const opened = session
+        ? await sessionActions(ctx, session, archived, signal)
+        : undefined;
+      if (opened) {
+        return opened;
+      }
+      continue;
+    }
     return picked;
+  }
+}
+
+// Open, rename, archive or restore a session without opening it first.
+async function sessionActions(
+  ctx: ExtensionContext,
+  session: WorkspaceSession,
+  archived: boolean,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  const title = session.title || "Untitled session";
+  const action = await chooseDrawer(ctx, {
+    title,
+    items: [
+      { value: "open", label: "Open" },
+      { value: "rename", label: "Rename" },
+      archived
+        ? { value: "restore", label: "Restore" }
+        : { value: "archive", label: "Archive" },
+    ],
+    signal,
+  });
+  switch (action ?? "") {
+    case "open":
+      return session.id;
+    case "rename": {
+      const name = await ctx.ui.input("New name", title, { signal });
+      if (name?.trim()) {
+        await workspace.rename(session.id, name, signal);
+      }
+      return undefined;
+    }
+    case "archive":
+      await workspace.archive(session.id, signal);
+      ctx.ui.notify(`Archived ${title}.`, "info");
+      return undefined;
+    case "restore":
+      await workspace.unarchive(session.id, signal);
+      ctx.ui.notify(`Restored ${title}.`, "info");
+      return undefined;
+    default:
+      return undefined;
   }
 }

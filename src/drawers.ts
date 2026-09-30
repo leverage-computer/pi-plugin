@@ -97,12 +97,18 @@ export async function chooseDrawer(
     signal,
     subtitle = "",
     query = "",
+    live,
+    more,
   }: {
     title: string;
     items: DrawerItem[];
     signal: AbortSignal;
     subtitle?: string;
     query?: string;
+    // Replaces the items while the drawer is open. Returns how to stop.
+    live?: (update: (items: DrawerItem[]) => void) => () => void;
+    // Tab on an item answers `more:<value>`, for that item's actions.
+    more?: string;
   },
 ): Promise<string | undefined> {
   if (!ctx.hasUI) {
@@ -116,8 +122,13 @@ export async function chooseDrawer(
     const search = new Input();
     search.setValue(query);
     search.focused = true;
+    let shown = items;
+    const stop = live?.((next) => {
+      shown = next;
+      tui.requestRender();
+    });
     const values = () =>
-      items.filter((one) =>
+      shown.filter((one) =>
         `${one.label} ${one.detail ?? ""}`
           .toLowerCase()
           .includes(search.getValue().toLowerCase()),
@@ -185,7 +196,7 @@ export async function chooseDrawer(
                 ]
               : []),
           ],
-          `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}  ${keyHint("tui.select.cancel", "cancel")}`,
+          `${rawKeyHint("↑↓", "navigate")}  ${keyHint("tui.select.confirm", "select")}${more ? `  ${rawKeyHint("tab", more)}` : ""}  ${keyHint("tui.select.cancel", "cancel")}`,
         );
       },
       handleInput(data) {
@@ -205,6 +216,11 @@ export async function chooseDrawer(
           if (item) {
             done(item.value);
           }
+        } else if (more && matchesKey(data, "tab")) {
+          const item = values()[selected];
+          if (item) {
+            done(`more:${item.value}`);
+          }
         } else {
           search.handleInput(data);
           selected = 0;
@@ -216,6 +232,7 @@ export async function chooseDrawer(
       },
       dispose() {
         signal.removeEventListener("abort", abort);
+        stop?.();
       },
     };
   });

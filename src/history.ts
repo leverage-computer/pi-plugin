@@ -1,6 +1,7 @@
 import {
   getMarkdownTheme,
   keyHint,
+  renderDiff,
   type Theme,
   type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
@@ -15,6 +16,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { z } from "zod";
 import { clean } from "./drawers";
+import { type ToolCard, toolCard, toolLabel } from "./tools";
 import {
   type Attachment,
   askSchema,
@@ -56,6 +58,10 @@ interface ToolPart {
   input: string;
   output: string;
   files: HistoryFile[];
+  // A sub-agent's work, one line per step.
+  steps?: string[];
+  // A background command or agent keeps running after its call returns.
+  background?: boolean;
 }
 
 export type HistoryPart = TextPart | ToolPart | HistoryFile;
@@ -83,12 +89,17 @@ interface Card {
   authorId?: string | null;
   inputUuid?: string;
   finalized?: boolean;
+  // A sub-agent's steps by transcript row, so a replayed row changes nothing.
+  steps?: Map<string, string>;
 }
 
 interface HistoryLimits {
   maxEntries?: number;
   maxCharacters?: number;
 }
+
+// Task statuses that mean a background command or agent has finished.
+const SETTLED = new Set(["completed", "failed", "stopped", "killed", "error"]);
 
 // Rows without a transcript position sort after every row that has one.
 const UNPLACED = 1e15;
@@ -111,6 +122,14 @@ function fileParts(attachments: readonly Attachment[]): HistoryFile[] {
     mime: one.contentType || "application/octet-stream",
     ...(one.url ? { uri: one.url } : {}),
   }));
+}
+
+// A person's message as they wrote it, with its attachments.
+function messageParts(input: SessionInput): HistoryPart[] {
+  return [
+    { type: "text", text: input.content },
+    ...fileParts(input.attachments ?? []),
+  ];
 }
 
 // A streamed row is one message that grows. Its stream ID names it.
@@ -155,6 +174,11 @@ function place(existing: string, delta: TranscriptDelta): string {
   );
 }
 
+/** The plan the agent asks someone to review, if the question is one. */
+export function planOf(event: TranscriptEvent): string | undefined {
+  return askSchema.parse(event.data.input).plan || undefined;
+}
+
 /** The questions the agent asked, with their answer options. */
 export function questionsOf(event: TranscriptEvent): Array<{
   question: string;
@@ -181,8 +205,9 @@ function partText(part: HistoryPart): string {
       return `[Attachment: ${part.name} (${part.mime})]`;
     case "tool":
       return [
-        `${part.name} · ${part.status}`,
+        `${part.name} · ${part.status}${part.background ? " in the background" : ""}`,
         part.input,
+        ...(part.steps ?? []).map((step) => `↳ ${step}`),
         part.output,
         ...part.files.map(partText),
       ]
@@ -204,34 +229,14 @@ const DELIVERY: Record<string, [string, ThemeColor]> = {
   unknown: ["Delivery unknown", "warning"],
 };
 
-const SUMMARY_KEYS = [
-  "command",
-  "file_path",
-  "path",
-  "pattern",
-  "query",
-  "url",
-  "name",
-  "description",
-];
-
-// Tool arguments and results arrive as JSON text.
-const toolArguments = z.record(z.string(), z.unknown());
-const summaryText = z.string().trim().min(1);
+// Tool results arrive as JSON text.
 const toolFailure = z.object({ error: z.string() });
-
-// The argument that says what a tool call does, such as a path or command.
-function toolSummary(input: string): string {
-  try {
-    const value = toolArguments.parse(JSON.parse(input));
-    const found = SUMMARY_KEYS.map((key) =>
-      summaryText.safeParse(value[key]),
-    ).find((one) => one.success)?.data;
-    return found?.split("\n")[0] ?? "";
-  } catch {
-    return "";
-  }
-}
+const planInput = z.looseObject({ plan: z.string().catch("") }).catch({
+  plan: "",
+});
+const writeInput = z
+  .object({ file_path: z.string().catch(""), content: z.string().catch("") })
+  .catch({ file_path: "", content: "" });
 
 // Leverage tools report failures as JSON with an error field.
 function toolError(output: string): string {
@@ -283,8 +288,8 @@ export function createHistoryComponent(
     }
   };
   // Pi previews ten lines of tool output until tools are expanded.
-  const preview = (value: string, color: ThemeColor): Component => {
-    const body = new Text(theme.fg(color, clean(value)), 0, 0);
+  const preview = (value: string, color: ThemeColor | undefined): Component => {
+    const body = new Text(color ? theme.fg(color, clean(value)) : value, 0, 0);
     return {
       invalidate: () => body.invalidate(),
       render(width) {
@@ -302,6 +307,81 @@ export function createHistoryComponent(
       },
     };
   };
+  // A shell call reads as its command. Other calls read as a name and a target.
+  const toolTitle = (card: ToolCard, name: string): string => {
+    const title = (label: string, subject: string) =>
+      `${theme.fg("toolTitle", theme.bold(clean(label)))}${subject ? ` ${theme.fg("accent", clean(subject))}` : ""}`;
+    const background = (on: boolean) =>
+      on ? theme.fg("muted", " · background") : "";
+    switch (card.kind) {
+      case "shell":
+        return `${theme.fg("toolTitle", theme.bold(clean(`$ ${card.command.split("\n")[0] ?? ""}`)))}${background(card.background)}`;
+      case "diff":
+        return title(card.title, card.subject);
+      case "todo": {
+        const done = card.items.filter((item) => item.status === "completed");
+        return title("Todos", `${done.length}/${card.items.length} done`);
+      }
+      case "plan":
+        return title("Plan", "");
+      case "task":
+        return `${title("Task", card.subject)}${background(card.background)}`;
+      case "activity":
+        return title(card.title || name, card.subject);
+    }
+  };
+
+  // What a card shows before the tool's own output.
+  const toolBody = (card: ToolCard, part: ToolPart): Component | undefined => {
+    switch (card.kind) {
+      case "diff":
+        return card.diff
+          ? preview(renderDiff(clean(card.diff)), undefined)
+          : undefined;
+      case "todo":
+        return new Text(
+          card.items
+            .map((item) => {
+              switch (item.status) {
+                case "completed":
+                  return theme.fg("dim", clean(`✓ ${item.text}`));
+                case "in_progress":
+                  return `${theme.fg("accent", "▸")} ${clean(item.text)}`;
+                case "pending":
+                  return `☐ ${clean(item.text)}`;
+              }
+            })
+            .join("\n"),
+          0,
+          0,
+        );
+      case "plan":
+        return card.plan
+          ? new Markdown(clean(card.plan), 0, 0, getMarkdownTheme())
+          : undefined;
+      // A sub-agent's latest steps, or all of them when expanded.
+      case "task": {
+        const steps = part.steps ?? [];
+        if (!steps.length) {
+          return undefined;
+        }
+        const shown = expanded ? steps : steps.slice(-4);
+        const hidden = steps.length - shown.length;
+        return new Text(
+          [
+            ...(hidden ? [theme.fg("muted", `… ${hidden} earlier steps`)] : []),
+            ...shown.map((step) => theme.fg("muted", clean(`↳ ${step}`))),
+          ].join("\n"),
+          0,
+          0,
+        );
+      }
+      case "shell":
+      case "activity":
+        return undefined;
+    }
+  };
+
   const tool = (part: ToolPart): Component => {
     const failed = part.status === "error";
     const done = part.status === "completed";
@@ -311,27 +391,37 @@ export function createHistoryComponent(
         text,
       ),
     );
-    const summary = clean(toolSummary(part.input));
-    // Pi titles a shell call as its command and other calls as name and target.
-    card.addChild(
-      new Text(
-        part.name === "bash" && summary
-          ? theme.fg("toolTitle", theme.bold(`$ ${summary}`))
-          : `${theme.fg("toolTitle", theme.bold(clean(part.name)))}${summary ? ` ${theme.fg("accent", summary)}` : ""}`,
-        0,
-        0,
-      ),
-    );
-    if (expanded && part.input) {
+    const shape = toolCard(part.name, part.input);
+    const still =
+      part.background && part.status === "running"
+        ? theme.fg("warning", " · running in the background")
+        : "";
+    card.addChild(new Text(`${toolTitle(shape, part.name)}${still}`, 0, 0));
+    const body = toolBody(shape, part);
+    if (body) {
+      card.addChild(body);
+    }
+    // Expanded, a call shows its full arguments unless its body already does.
+    const described =
+      shape.kind === "diff" || shape.kind === "todo" || shape.kind === "plan";
+    if (expanded && part.input && !described) {
       card.addChild(new Text(theme.fg("muted", clean(part.input)), 0, 0));
     }
+    // An edit or a checklist says it all. Its output matters only on failure.
+    const quiet = !failed && (shape.kind === "diff" || shape.kind === "todo");
     const output = failed ? toolError(part.output) : part.output;
-    if (output) {
-      card.addChild(preview(output, failed ? "error" : "toolOutput"));
+    if (output && !quiet) {
+      // Read results number each line. The card shows the file as it is.
+      const shown =
+        shape.kind === "activity" && shape.trimLines
+          ? output.replace(/^\s*\d+[→|:\t]\s?/gm, "")
+          : output;
+      card.addChild(preview(shown, failed ? "error" : "toolOutput"));
     }
     files(card, part.files);
     return card;
   };
+
   // People get Pi's own message card, with a name line for shared sessions.
   const person = (entry: HistoryEntry): Component => {
     const card = new Box(1, 1, (text) => theme.bg("userMessageBg", text));
@@ -441,6 +531,15 @@ export class SharedHistory {
   private readonly published = new Map<string, HistoryEntry>();
   private readonly inputs = new Map<string, SessionInput>();
   private readonly keyByRow = new Map<string, string>();
+  // The Task call that started each sub-agent, by task ID.
+  private readonly agentCalls = new Map<string, string>();
+  // Background work still running, by the tool call that started it.
+  private readonly running = new Set<string>();
+  // The compaction card waiting for its finished row.
+  private compacting?: string;
+  // The earliest transcript position loaded. Older messages belong to a
+  // history page the conversation does not show.
+  private oldestSeq?: number;
   private members: readonly WorkspaceMember[] = [];
   private viewerId?: string;
   private readonly maxEntries: number;
@@ -477,20 +576,25 @@ export class SharedHistory {
       this.inputs.set(input.uuid, input);
       const key = `input:${input.uuid}`;
       const existing = this.cards.get(key);
-      if (!existing && !WAITING.has(input.status)) {
+      if (!existing && !this.shows(input)) {
         continue;
       }
       const created = Date.parse(input.createdAt) || 0;
+      const seq = input.consumedTranscriptSeq;
       const card: Card = existing ?? {
         key,
         order: UNPLACED + created,
         created,
         role: "user",
-        parts: [
-          { type: "text", text: input.content },
-          ...fileParts(input.attachments ?? []),
-        ],
+        parts: [],
       };
+      // A message the agent took in sits right after where it did.
+      if (typeof seq === "number" && card.order >= UNPLACED) {
+        card.order = seq + 0.5;
+      }
+      if (!card.parts.length) {
+        card.parts = messageParts(input);
+      }
       card.inputUuid = input.uuid;
       card.authorId ??= input.authorId;
       this.cards.set(key, card);
@@ -500,6 +604,25 @@ export class SharedHistory {
       this.inputs.delete(this.inputs.keys().next().value!);
     }
     return this.settle(changes);
+  }
+
+  // Whether a message gets a card of its own before any row names it.
+  private shows(input: SessionInput): boolean {
+    if (input.kind === "compact") {
+      return false;
+    }
+    if (input.status === "withdrawn") {
+      return false;
+    }
+    if (input.status !== "consumed") {
+      return true;
+    }
+    // A message taken in before the loaded rows belongs to an older page.
+    const seq = input.consumedTranscriptSeq;
+    if (this.oldestSeq === undefined) {
+      return typeof seq === "number";
+    }
+    return typeof seq === "number" && seq >= this.oldestSeq;
   }
 
   /** Folds transcript rows in. Replaying a row changes nothing. */
@@ -512,8 +635,13 @@ export class SharedHistory {
       if (event.sessionId !== this.sessionId) {
         continue;
       }
-      const card = this.fold(event);
-      if (card) {
+      if (typeof event.transcriptSeq === "number") {
+        this.oldestSeq = Math.min(
+          this.oldestSeq ?? event.transcriptSeq,
+          event.transcriptSeq,
+        );
+      }
+      for (const card of this.fold(event)) {
         changes.push(...this.publish(card));
       }
     }
@@ -524,6 +652,23 @@ export class SharedHistory {
   delta(delta: TranscriptDelta): HistoryEntry[] {
     const card = this.grow(delta);
     return card ? this.settle(this.publish(card)) : [];
+  }
+
+  /** Fills in a file's bytes once they arrive. Returns the cards that show it. */
+  fill(uri: string, data: string): HistoryEntry[] {
+    const changes: HistoryEntry[] = [];
+    for (const card of this.cards.values()) {
+      const shows = (part: HistoryPart) =>
+        part.type === "file" && part.uri === uri;
+      if (!card.parts.some(shows)) {
+        continue;
+      }
+      card.parts = card.parts.map((part) =>
+        part.type === "file" && part.uri === uri ? { ...part, data } : part,
+      );
+      changes.push(...this.publish(card));
+    }
+    return changes;
   }
 
   entries(): HistoryEntry[] {
@@ -553,29 +698,96 @@ export class SharedHistory {
     return card;
   }
 
-  // Each row kind updates one card. Rows the conversation does not show are skipped.
-  private fold(event: TranscriptEvent): Card | undefined {
-    const data = event.data;
-    switch (event.kind) {
-      case "user": {
-        const input = event.sourceInputUuids?.[0];
-        const card = this.card(
-          input ? `input:${input}` : `row:${event.id}`,
-          event,
-          "user",
-        );
-        card.inputUuid = input;
-        if (event.authorId !== undefined) {
-          card.authorId = event.authorId;
+  // A plan without text is the one the agent just wrote to a plan file.
+  private planText(input: unknown): string {
+    const plan = planInput.parse(input).plan;
+    if (plan) {
+      return plan;
+    }
+    const written = [...this.cards.values()]
+      .sort((a, b) => b.order - a.order)
+      .flatMap((card) => card.parts)
+      .find((part) => {
+        if (part.type !== "tool" || part.name !== "Write") {
+          return false;
         }
+        const path = writeInput.parse(JSON.parse(part.input)).file_path;
+        return path.includes("/plans/") || path.endsWith(".md");
+      });
+    return written?.type === "tool"
+      ? writeInput.parse(JSON.parse(written.input)).content
+      : "";
+  }
+
+  // A sub-agent's row adds a step to the Task card that started it.
+  private step(parent: string, event: TranscriptEvent): Card | undefined {
+    const card = this.cards.get(`tool:${parent}`);
+    const tool = card?.parts[0];
+    if (!card || tool?.type !== "tool") {
+      return undefined;
+    }
+    const data = event.data;
+    const line =
+      event.kind === "tool_call"
+        ? toolLabel(data.name, JSON.stringify(data.input ?? {}))
+        : event.kind === "text" && data.finalized
+          ? (data.content.trim().split("\n")[0] ?? "")
+          : event.kind === "error"
+            ? `Error: ${data.content || "the step failed"}`
+            : "";
+    if (!line) {
+      return undefined;
+    }
+    card.steps ??= new Map();
+    card.steps.set(event.id, line);
+    card.parts = [{ ...tool, steps: [...card.steps.values()] }];
+    return card;
+  }
+
+  // Each row kind updates one card. Rows the conversation does not show are skipped.
+  private fold(event: TranscriptEvent): Card[] {
+    const data = event.data;
+    // A sub-agent works inside its Task card, as it does in the web app.
+    const parent =
+      data.parentToolUseId || this.agentCalls.get(data.delegatedTaskId);
+    if (parent && event.kind !== "task") {
+      const card = this.step(parent, event);
+      return card ? [card] : [];
+    }
+    if (data.delegatedTaskId && event.kind !== "task") {
+      return [];
+    }
+    switch (event.kind) {
+      // Messages that reached the agent together share one row. Each keeps
+      // its own card, and a later message fills in the text.
+      case "user": {
+        const uuids = event.sourceInputUuids?.length
+          ? event.sourceInputUuids
+          : [undefined];
         const answers = Object.entries(data.answers).map(
           ([question, answer]) => `${question}: ${String(answer)}`,
         );
-        card.parts = [
-          { type: "text", text: data.content || answers.join("\n") },
-          ...fileParts(data.attachments),
-        ];
-        return card;
+        return uuids.map((uuid, index) => {
+          const input = uuid ? this.inputs.get(uuid) : undefined;
+          const card = this.card(
+            uuid ? `input:${uuid}` : `row:${event.id}`,
+            event,
+            "user",
+          );
+          card.inputUuid = uuid;
+          if (event.authorId !== undefined) {
+            card.authorId = event.authorId;
+          }
+          if (index === 0) {
+            card.parts = [
+              { type: "text", text: data.content || answers.join("\n") },
+              ...fileParts(data.attachments),
+            ];
+          } else if (input) {
+            card.parts = messageParts(input);
+          }
+          return card;
+        });
       }
       case "text":
       case "reasoning": {
@@ -593,11 +805,18 @@ export class SharedHistory {
               : existing;
         card.finalized ||= finalized;
         card.parts = keep ? [{ type: event.kind, text: keep }] : [];
-        return card;
+        return [card];
       }
       case "tool_call": {
         const card = this.card(toolKey(event), event, "assistant");
         const previous = card.parts[0];
+        const input =
+          data.name === "ExitPlanMode"
+            ? {
+                ...planInput.parse(data.input),
+                plan: this.planText(data.input),
+              }
+            : data.input;
         const done =
           previous?.type === "tool" &&
           (previous.status === "completed" || previous.status === "error");
@@ -607,12 +826,18 @@ export class SharedHistory {
             id: data.toolUseId || event.id,
             name: data.name || "tool",
             status: done ? previous.status : "running",
-            input: JSON.stringify(data.input ?? {}, null, 2),
+            input: JSON.stringify(input ?? {}, null, 2),
             output: previous?.type === "tool" ? previous.output : "",
             files: [],
+            ...(previous?.type === "tool" && previous.steps
+              ? { steps: previous.steps }
+              : {}),
+            ...(previous?.type === "tool" && previous.background
+              ? { background: true }
+              : {}),
           },
         ];
-        return card;
+        return [card];
       }
       case "tool_result": {
         const asked = `ask:${data.toolUseId}`;
@@ -625,28 +850,69 @@ export class SharedHistory {
           ) {
             card.parts = [{ type: "text", text: `${question.text}\nAnswered` }];
           }
-          return card;
+          return [card];
         }
         const card = this.card(toolKey(event), event, "assistant");
         const previous = card.parts[0];
         const failed = data.isError || data.is_error;
+        // A background command returns at once and keeps running.
+        const background = this.running.has(data.toolUseId);
         card.parts = [
           {
             type: "tool",
             id: data.toolUseId || event.id,
             name:
               previous?.type === "tool" ? previous.name : data.name || "tool",
-            status: failed ? "error" : "completed",
+            status: failed ? "error" : background ? "running" : "completed",
             input: previous?.type === "tool" ? previous.input : "",
             output: toolOutput(data),
             files: [],
+            ...(previous?.type === "tool" && previous.steps
+              ? { steps: previous.steps }
+              : {}),
+            ...(background ? { background } : {}),
           },
         ];
-        return card;
+        return [card];
+      }
+      // Background commands and sub-agents report as tasks until they settle.
+      case "task": {
+        if (data.taskId && data.toolUseId) {
+          this.agentCalls.set(data.taskId, data.toolUseId);
+        }
+        if (!data.toolUseId) {
+          return [];
+        }
+        const settled = data.phase === "settled" || SETTLED.has(data.status);
+        if (settled) {
+          this.running.delete(data.toolUseId);
+        } else if (data.backgrounded) {
+          this.running.add(data.toolUseId);
+        }
+        const card = this.cards.get(`tool:${data.toolUseId}`);
+        const tool = card?.parts[0];
+        if (!card || tool?.type !== "tool") {
+          return [];
+        }
+        if (!settled && !data.backgrounded) {
+          return [];
+        }
+        const failed = data.status === "failed" || data.status === "error";
+        card.parts = [
+          {
+            ...tool,
+            status: settled ? (failed ? "error" : "completed") : "running",
+            background: true,
+          },
+        ];
+        return [card];
       }
       case "ask_user": {
         const key = `ask:${data.toolUseId || event.id}`;
         const card = this.card(key, event, "system");
+        if (!card.parts.length && planOf(event)) {
+          card.parts = [{ type: "text", text: "Plan ready for your review" }];
+        }
         if (!card.parts.length) {
           const lines = questionsOf(event).flatMap((one) => [
             one.question,
@@ -656,13 +922,13 @@ export class SharedHistory {
             { type: "text", text: ["Question for you", ...lines].join("\n") },
           ];
         }
-        return card;
+        return [card];
       }
       case "error": {
         const card = this.card(`row:${event.id}`, event, "assistant");
         const message = data.content || "The turn failed";
         card.parts = [{ type: "text", text: `Error: ${message}` }];
-        return card;
+        return [card];
       }
       case "interrupted": {
         const card = this.card(`row:${event.id}`, event, "system");
@@ -671,22 +937,40 @@ export class SharedHistory {
             ? `Stopped by ${this.name(event.authorId)}`
             : "Interrupted";
         card.parts = [{ type: "text", text: stopped }];
-        return card;
+        return [card];
       }
+      // A compaction writes a started row, then a finished one that replaces it.
+      // Tombstones are storage markers, not compactions.
       case "compaction": {
         if (data.tombstone) {
-          return undefined;
+          return [];
         }
-        const card = this.card(`row:${event.id}`, event, "system");
-        card.parts = [{ type: "text", text: "Context compacted" }];
-        return card;
+        const started = data.phase === "started";
+        const key =
+          this.keyByRow.get(event.id) ??
+          (started ? undefined : this.compacting) ??
+          `row:${event.id}`;
+        const card = this.card(key, event, "system");
+        card.finalized ||= !started;
+        this.compacting = card.finalized ? undefined : key;
+        card.parts = [
+          {
+            type: "text",
+            text: card.finalized ? "Context compacted" : "Compacting context…",
+          },
+        ];
+        return [card];
       }
       default:
-        return undefined;
+        return [];
     }
   }
 
   private grow(delta: TranscriptDelta): Card | undefined {
+    // A sub-agent's finished rows show as steps of its Task card.
+    if (delta.parentToolUseId || delta.delegatedTaskId) {
+      return undefined;
+    }
     if (delta.kind === "text" || delta.kind === "reasoning") {
       return this.stream(delta, delta.kind);
     }
@@ -725,6 +1009,9 @@ export class SharedHistory {
       return undefined;
     }
     const current = card.parts[0];
+    if (current?.type === "tool") {
+      return undefined;
+    }
     const existing =
       current?.type === "text" || current?.type === "reasoning"
         ? current.text

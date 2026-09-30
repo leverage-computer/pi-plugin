@@ -12,7 +12,7 @@ conversation in the web app.
 You need Node.js 22.19 or newer.
 
 ```sh
-npm install -g @earendil-works/pi-coding-agent@0.85.1
+npm install -g @earendil-works/pi-coding-agent@0.99.1
 leverage login
 pi install git:github.com/thepresciencecompany/pi-plugin
 pi
@@ -35,7 +35,10 @@ for it:
 - Your first message starts the session.
 - You'll see **Working** while the agent is busy.
 - Want a different model? Press **F2**. In an open session, it switches with
-  your next message.
+  your next message. New sessions start with the model you used last.
+- Pasted an image with **Ctrl+V**? It goes to the agent with your message.
+- The agent's edits show as diffs, and its checklist, helpers and background
+  commands each get their own card.
 
 [Watch it in full](docs/media/01-first-session.mp4)
 
@@ -56,10 +59,25 @@ for it:
 
 - Sometimes the agent asks before it runs something.
 - A yellow line tells you something is waiting.
-- Press **F4**, then pick **Approve once** or **Deny**.
+- Press **F4**, then pick **Approve once** or **Deny**. You only see the
+  choices you're allowed to make.
+- A plan to review works the same way: approve it, or ask for changes.
 - Not sure? Press **Escape**. Nothing gets approved.
 
 [Watch it in full](docs/media/03-approvals.mp4)
+
+### See what the agent made
+
+![Reading outputs and changes](docs/media/04-files.gif)
+
+- Type `/leverage outputs` to see the files the agent made. Press **Enter**
+  to read one, or **Tab** to save it in the folder you started Pi in.
+- Type `/leverage files` to look through all of the session's folders, or
+  to find a file by name.
+- Type `/leverage changes` to see what the agent changed, on which branch,
+  and its pull request.
+
+[Watch it in full](docs/media/04-files.mp4)
 
 ## Handy commands
 
@@ -80,8 +98,14 @@ These keys work once you're in a Leverage session.
 | `/leverage queue <message>` | Send a message after the agent finishes |
 | `/leverage archive` | Put the session away |
 | `/leverage retry` | Try again when a message didn't send |
+| `/leverage skills` | Pick a skill for your next message |
+| `/leverage outputs` | Files the agent made |
+| `/leverage files` | All of the session's folders |
+| `/leverage changes` | What changed, and the pull request |
+| `/leverage connectors` | The apps your workspace connects to |
 
-Type `/leverage` to see everything else.
+In the session list, press **Tab** to rename or archive a session without
+opening it.
 
 Good to know:
 

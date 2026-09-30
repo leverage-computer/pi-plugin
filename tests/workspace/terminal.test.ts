@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -116,7 +116,7 @@ async function terminal(columns: number) {
     await key("\r");
     await Bun.sleep(400);
   }
-  return { f, wait, key, output: () => output };
+  return { f, wait, key, output: () => output, directory };
 }
 
 test("narrow Pi terminal sets the channel with F1 and the model with F2, keeping the draft and creating nothing", async () => {
@@ -196,3 +196,51 @@ test("the session selector names each session's place, and switching restores ea
     false,
   );
 }, 45000);
+
+test("the session picker shows new sessions live and offers a session's actions", async () => {
+  const ui = await terminal(120);
+  await ui.key("\x1bOR");
+  await ui.wait("Leverage sessions");
+  await ui.wait("tab actions");
+  const late = "33333333-3333-4333-8333-333333333333";
+  ui.f.sessions.push({
+    ...exampleSession(),
+    id: late,
+    title: "Started elsewhere",
+  });
+  ui.f.publish({ type: "session.list.changed", sessionId: late });
+  await ui.wait("Started elsewhere");
+  await ui.key("Started elsewhere");
+  await ui.key("\t");
+  await ui.wait("Rename");
+  await ui.wait("Archive");
+}, 45000);
+
+test("files, changes and connections open from the session like in the web app", async () => {
+  const ui = await terminal(120);
+  await ui.key("\x1bOR");
+  await ui.wait("Leverage sessions");
+  await ui.key("Shared work\r");
+  await ui.wait("• Shared work");
+  await ui.key("/leverage outputs\r");
+  await ui.wait("report.md");
+  await ui.wait("logs/");
+  await ui.key("report.md\r");
+  await ui.wait("All checks pass.");
+  await ui.key("\x1b");
+  await ui.wait("report.md");
+  // Tab saves the highlighted file in the folder Pi runs in.
+  await ui.key("report.md\t");
+  await ui.wait("Saved");
+  expect(await readFile(join(ui.directory, "report.md"), "utf8")).toContain(
+    "All checks pass.",
+  );
+  await ui.key("\x1b");
+  await ui.key("/leverage changes\r");
+  await ui.wait("Pull request #42 (open)");
+  await ui.wait("tests/checkout.test.ts  +1 -1");
+  await ui.key("\x1b");
+  await ui.key("/leverage connectors\r");
+  await ui.wait("Linear");
+  await ui.wait("12 tools");
+}, 60000);

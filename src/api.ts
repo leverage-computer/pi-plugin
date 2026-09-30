@@ -284,6 +284,30 @@ export class SessionClient {
     return this.run(this.fetchJson(path, method, body, timeoutMs), signal);
   }
 
+  /** A file Leverage serves, such as an attached image, read whole. */
+  bytes(
+    path: string,
+    signal?: AbortSignal,
+    limit = MAX_RESPONSE_BYTES,
+  ): Promise<{ data: Uint8Array; contentType: string }> {
+    const program = Effect.suspend(() => {
+      if (!path.startsWith("/api/")) {
+        return Effect.fail(new InputError("Invalid Leverage API path"));
+      }
+      return this.send(new URL(path, this.origin), "GET");
+    }).pipe(
+      Effect.flatMap((response) =>
+        readBody(response, limit).pipe(
+          Effect.map((data) => ({
+            data,
+            contentType: response.headers.get("content-type") ?? "",
+          })),
+        ),
+      ),
+    );
+    return this.run(program, signal);
+  }
+
   private run<A>(effect: Effect.Effect<A, Failure>, signal?: AbortSignal) {
     return run(effect, within(this.lifetime.signal, signal));
   }

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { LeverageConnection } from "./api";
 import { ConfigError } from "./errors";
 import { decode, runSync } from "./runtime";
+import { familySchema, type ProviderFamily } from "./workspace/schema";
 
 export type ConnectionFlags = {
   host?: string;
@@ -99,10 +100,72 @@ const folderIn = (workspace: string) =>
 const configError = (issue: z.ZodError) =>
   new ConfigError(issue.issues[0]?.message ?? "");
 
-function readConfig(env: NodeJS.ProcessEnv) {
-  const directory =
+// Where `leverage login` keeps its settings.
+function configDirectory(env: NodeJS.ProcessEnv): string {
+  return (
     env.LEVERAGE_CONFIG_DIR ??
-    join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "leverage");
+    join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "leverage")
+  );
+}
+
+export type ModelPick = {
+  providerFamily?: ProviderFamily;
+  model?: string;
+  reasoningEffort?: string;
+};
+
+// The model a person last picked for a new session, per host and workspace.
+// The web app keeps the same pick in the browser.
+const picksSchema = z
+  .record(
+    z.string(),
+    z.object({
+      providerFamily: familySchema.optional().catch(undefined),
+      model: z.string().optional().catch(undefined),
+      reasoningEffort: z.string().optional().catch(undefined),
+    }),
+  )
+  .catch({});
+
+function readPicks(env: NodeJS.ProcessEnv) {
+  try {
+    return picksSchema.parse(
+      JSON.parse(readFileSync(join(configDirectory(env), "pi.json"), "utf8")),
+    );
+  } catch {
+    return {};
+  }
+}
+
+/** The last model picked for new sessions here, if any. */
+export function rememberedModel(
+  connection: Pick<LeverageConnection, "host" | "workspace">,
+  env: NodeJS.ProcessEnv = process.env,
+): ModelPick {
+  return readPicks(env)[`${connection.host}/${connection.workspace}`] ?? {};
+}
+
+/** Keeps a new session's model as the pick for the next one. */
+export function rememberModel(
+  connection: Pick<LeverageConnection, "host" | "workspace">,
+  pick: ModelPick,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const directory = configDirectory(env);
+  const picks = {
+    ...readPicks(env),
+    [`${connection.host}/${connection.workspace}`]: pick,
+  };
+  try {
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "pi.json"), JSON.stringify(picks, null, 2));
+  } catch {
+    // The pick is a convenience. The session works without it.
+  }
+}
+
+function readConfig(env: NodeJS.ProcessEnv) {
+  const directory = configDirectory(env);
   return Effect.try({
     try: (): unknown =>
       JSON.parse(readFileSync(join(directory, "config.json"), "utf8")),

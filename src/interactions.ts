@@ -1,11 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clean } from "./drawers";
-import { questionsOf } from "./history";
+import { planOf, questionsOf } from "./history";
 import { workspace } from "./workspace/api";
 import type {
   Invocation,
   SessionInput,
   TranscriptEvent,
+  WorkspaceMember,
   WorkspaceSession,
 } from "./workspace/schema";
 
@@ -18,10 +19,52 @@ export type ModelChoice = { model: string; reasoningEffort?: string };
 export interface InteractionSource {
   readonly id: string;
   readonly session?: WorkspaceSession;
+  readonly userId?: string;
+  readonly members: readonly WorkspaceMember[];
   pendingApprovals(): Invocation[];
   pendingQuestions(): TranscriptEvent[];
   queued(): SessionInput[];
   refresh(): Promise<void>;
+}
+
+/**
+ * Who may approve a call, and who may make that permanent. This is
+ * Leverage's own rule, so the dialog never offers a choice it refuses.
+ */
+function approvalRights(
+  invocation: Invocation,
+  source: InteractionSource,
+): { approve: boolean; always: boolean } {
+  // Approval runs the call as someone. Without anyone, nobody can run it.
+  if (invocation.actingUserId === null) {
+    return { approve: false, always: false };
+  }
+  const viewer = source.userId;
+  const role = source.members.find((one) => one.id === viewer)?.role;
+  const staff = role === "owner" || role === "admin";
+  const connector =
+    invocation.workspaceConnectorId ||
+    invocation.connectorOwnerUserId ||
+    invocation.connectorScope;
+  // A first-party tool: an "always" rule belongs to the session owner.
+  if (!connector) {
+    return { approve: true, always: source.session?.ownerId === viewer };
+  }
+  const owner =
+    !!invocation.connectorOwnerUserId &&
+    invocation.connectorOwnerUserId === viewer;
+  // A deleted connection keeps its snapshot but takes no new rules.
+  const live = !!invocation.workspaceConnectorId;
+  switch (invocation.connectorScope ?? "") {
+    case "user":
+      return { approve: owner, always: owner && live };
+    case "channel":
+      return { approve: true, always: live && (owner || staff) };
+    case "workspace":
+      return { approve: true, always: live && staff };
+    default:
+      return { approve: false, always: false };
+  }
 }
 
 /** The dialogs a pending request may open. Every string shown is cleaned. */
@@ -198,7 +241,10 @@ export class PendingInteractions {
       const question = await this.pick(
         this.source.pendingQuestions(),
         "questions",
-        (one) => questionsOf(one)[0]?.question ?? "Question",
+        (one) =>
+          planOf(one)
+            ? "Review the plan"
+            : (questionsOf(one)[0]?.question ?? "Question"),
         signal,
       );
       if (question) {
@@ -259,12 +305,14 @@ export class PendingInteractions {
       });
       return;
     }
+    const rights = approvalRights(invocation, this.source);
     const picked = await this.ui.choose({
-      title: detail,
+      title: rights.approve
+        ? detail
+        : `${detail}\nOnly the connection's owner can approve this`,
       choices: [
-        "Approve once",
-        "Approve for this session",
-        "Always approve",
+        ...(rights.approve ? ["Approve once", "Approve for this session"] : []),
+        ...(rights.always ? ["Always approve"] : []),
         "Deny",
         "Leave pending",
       ],
@@ -327,6 +375,10 @@ export class PendingInteractions {
     signal: AbortSignal,
   ): Promise<void> {
     const toolUseId = event.data.toolUseId;
+    if (planOf(event)) {
+      await this.plan(toolUseId, signal);
+      return;
+    }
     const answers: Record<string, string> = {};
     for (const one of questionsOf(event)) {
       const answer = one.multiSelect
@@ -354,7 +406,57 @@ export class PendingInteractions {
     if (signal.aborted) {
       return;
     }
-    await workspace.answer(this.source.id, toolUseId, answers, signal);
+    await workspace.answer(this.source.id, toolUseId, { answers }, signal);
+  }
+
+  // The plan itself is in the conversation. Changes carry the person's note.
+  private async plan(toolUseId: string, signal: AbortSignal): Promise<void> {
+    const picked = await this.ui.choose({
+      title: "Review the plan above",
+      choices: ["Approve the plan", "Ask for changes", "Leave it pending"],
+      signal,
+    });
+    if (picked === "Approve the plan") {
+      await workspace.answer(
+        this.source.id,
+        toolUseId,
+        { answers: { plan: "approved" } },
+        signal,
+      );
+      return;
+    }
+    if (picked !== "Ask for changes") {
+      return;
+    }
+    const comment = await this.ui.input({
+      title: "What should change?",
+      placeholder: "Your note for the agent",
+      signal,
+    });
+    if (comment === undefined) {
+      return;
+    }
+    if (signal.aborted) {
+      return;
+    }
+    const notes = comment.trim()
+      ? {
+          plan: {
+            notes: JSON.stringify([
+              { selectedText: "", comment: comment.trim() },
+            ]),
+          },
+        }
+      : undefined;
+    await workspace.answer(
+      this.source.id,
+      toolUseId,
+      {
+        answers: { plan: "changes_requested" },
+        ...(notes ? { annotations: notes } : {}),
+      },
+      signal,
+    );
   }
 
   // One option, or a written answer of the person's own.

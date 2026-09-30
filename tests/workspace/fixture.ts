@@ -34,6 +34,7 @@ export function exampleSession(): WorkspaceSession & { visibility: string } {
     reasoningEffort: "high",
     status: "idle",
     turnId: null,
+    ownerId: "owner",
   };
 }
 
@@ -109,6 +110,11 @@ export function workspaceFixture(extra?: Extra) {
     refreshCount: 0,
     version: 0,
     readDelay: undefined as Promise<void> | undefined,
+    // The session's outputs folder, by resource-relative path.
+    outputs: {
+      "report.md": "# Report\nAll checks pass.",
+      "logs/run.txt": "run 1 ok",
+    } as Record<string, string>,
     nativeMessages: [] as SessionInput[],
     queue: [] as SessionInput[],
     catalog: [hostedModel] as HostedModel[],
@@ -286,6 +292,141 @@ export function workspaceFixture(extra?: Extra) {
           messages: state.queue,
         });
       }
+      if (path.endsWith("/files/resources")) {
+        return Response.json({
+          basis: "active_runtime",
+          policyRevision: 1,
+          inputRevisionDigest: "d",
+          resources: [
+            {
+              resourceId: "state:1",
+              stableId: "1",
+              version: 1,
+              kind: "task_workspace",
+              access: "rw",
+              source: "session",
+              mountPath: "/work/outputs",
+              isAnchor: false,
+              isWorkingRoot: true,
+            },
+            {
+              resourceId: "cache:1",
+              stableId: "2",
+              version: 1,
+              kind: "workspace_cache",
+              access: "rw",
+              source: "cache",
+              mountPath: "/work/.cache",
+              isAnchor: false,
+              isWorkingRoot: false,
+            },
+          ],
+        });
+      }
+      const folder = url.searchParams.get("path") ?? "";
+      if (path.endsWith("/files/tree")) {
+        const inside = Object.keys(state.outputs)
+          .filter((file) => !folder || file.startsWith(`${folder}/`))
+          .map((file) => file.slice(folder ? folder.length + 1 : 0));
+        const names = [...new Set(inside.map((file) => file.split("/")[0]!))];
+        return Response.json({
+          path: folder,
+          entries: names.map((name) => {
+            const full = folder ? `${folder}/${name}` : name;
+            const text = state.outputs[full];
+            return {
+              name,
+              path: full,
+              type: text === undefined ? "dir" : "file",
+              size: text?.length ?? null,
+              modifiedAt: null,
+            };
+          }),
+        });
+      }
+      if (path.endsWith("/files/read")) {
+        const text = state.outputs[folder] ?? "";
+        return Response.json({
+          path: folder,
+          name: folder.split("/").pop(),
+          byteSize: text.length,
+          encoding: "utf-8",
+          isBinary: false,
+          tooLarge: false,
+          modifiedAt: null,
+          downloadOnly: false,
+          content: text,
+        });
+      }
+      if (path.endsWith("/files/search")) {
+        const query = url.searchParams.get("q") ?? "";
+        return Response.json({
+          entries: Object.keys(state.outputs)
+            .filter((file) => file.includes(query))
+            .map((file) => ({
+              name: file.split("/").pop(),
+              path: file,
+              type: "file",
+              size: state.outputs[file]!.length,
+              modifiedAt: null,
+              score: 1,
+            })),
+          truncated: false,
+          visited: Object.keys(state.outputs).length,
+        });
+      }
+      if (path.endsWith("/files/download")) {
+        return new Response(state.outputs[folder] ?? "");
+      }
+      if (path.endsWith("/file-sources")) {
+        return Response.json({
+          working: false,
+          sources: [
+            {
+              id: "checkout:1",
+              resourceId: "checkout:1",
+              kind: "repository",
+              label: "acme/storefront",
+              mountPath: "/work/storefront",
+              branch: "leverage/fix-checkout",
+              changes: [
+                {
+                  path: "tests/checkout.test.ts",
+                  state: "modified",
+                  additions: 1,
+                  deletions: 1,
+                },
+              ],
+              updates: [],
+              unpublished: 1,
+              publication: {
+                number: 42,
+                url: "https://github.com/acme/storefront/pull/42",
+                headCommit: "abc",
+                branch: "leverage/fix-checkout",
+                state: "open",
+              },
+            },
+          ],
+        });
+      }
+      if (path.endsWith("/connectors")) {
+        return Response.json({
+          connectors: [
+            {
+              id: "c1",
+              name: "linear",
+              namespace: "linear",
+              label: "Linear",
+              scope: "workspace",
+              disabled: false,
+              runtimeStatus: "runtime_verified",
+              catalogToolCount: 12,
+              description: "Issues and projects",
+            },
+          ],
+        });
+      }
       if (path.endsWith("/pending-approvals")) {
         return Response.json({
           invocations: approvals.filter(
@@ -424,6 +565,20 @@ export function workspaceFixture(extra?: Extra) {
               sessionId: frame.sessionId,
               toolUseId: frame.toolUseId,
               clientRequestId: frame.clientRequestId,
+            });
+            return;
+          // Leverage confirms these only through the session update.
+          case "session.archive":
+          case "session.unarchive":
+            if (!canWrite(ws.data.user)) {
+              reply({ type: "error", message: "Only writers can archive" });
+              return;
+            }
+            update({
+              archivedAt:
+                frame.type === "session.archive"
+                  ? new Date().toISOString()
+                  : null,
             });
             return;
           default:

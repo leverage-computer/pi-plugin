@@ -230,6 +230,42 @@ describe("tool approvals", () => {
     expect(pending.approvalCount).toBe(0);
   });
 
+  test("offers only the choices Leverage accepts from this person", async () => {
+    const offered: string[][] = [];
+    const { f, pending } = await setup({
+      user: MEMBER,
+      prepare: (f) =>
+        f.grants.push({
+          principalType: "user",
+          principalId: MEMBER,
+          role: "collaborator",
+        }),
+      ui: {
+        select: async (_title, options) => {
+          offered.push(options);
+          return undefined;
+        },
+      },
+    });
+    // A collaborator decides first-party calls, but an "always" rule is the owner's.
+    f.approvals.push(invocation({ actingUserId: "owner" }));
+    await pending.show("approvals");
+    // Someone else's personal connection: only its owner may approve.
+    f.approvals.splice(0, 1, {
+      ...invocation({ actingUserId: "owner" }),
+      connectorScope: "user",
+      connectorOwnerUserId: "owner",
+      workspaceConnectorId: "conn_1",
+    });
+    await pending.show("approvals");
+    expect(
+      offered.map((one) => one.filter((label) => !label.startsWith("("))),
+    ).toEqual([
+      ["Approve once", "Approve for this session", "Deny", "Leave pending"],
+      ["Deny", "Leave pending"],
+    ]);
+  });
+
   test("deny asks for an optional reason and sends it", async () => {
     const reasons: Array<string | undefined> = [
       undefined,
@@ -375,6 +411,51 @@ describe("questions", () => {
     expect(pending.questionCount).toBe(1);
     f.emit("tool_result", { toolUseId: "toolu_q" });
     await eventually(() => pending.questionCount === 0);
+  });
+
+  test("a plan is approved, or sent back with a note, never approved unseen", async () => {
+    const picks = ["Ask for changes", "Approve the plan"];
+    const titles: string[] = [];
+    const { f, pending, actions } = await setup({
+      ui: {
+        select: async (title, options) => {
+          titles.push(title);
+          const next = picks.shift();
+          return options.find((one) => one === next);
+        },
+        input: async () => "Test the migration first",
+      },
+    });
+    f.emit("ask_user", {
+      toolUseId: "toolu_plan",
+      input: { plan: "# Ship it\n1. Migrate\n2. Deploy" },
+    });
+    await pending.show("questions");
+    expect(titles).toEqual(["Review the plan above"]);
+    await pending.show("questions");
+    expect(actions()).toEqual([
+      {
+        type: "session.answer",
+        sessionId: SESSION,
+        toolUseId: "toolu_plan",
+        answers: { plan: "changes_requested" },
+        annotations: {
+          plan: {
+            notes: JSON.stringify([
+              { selectedText: "", comment: "Test the migration first" },
+            ]),
+          },
+        },
+        clientRequestId: expect.any(String),
+      },
+      {
+        type: "session.answer",
+        sessionId: SESSION,
+        toolUseId: "toolu_plan",
+        answers: { plan: "approved" },
+        clientRequestId: expect.any(String),
+      },
+    ]);
   });
 
   test("sends nothing when the answers are not confirmed or the dialog is cancelled", async () => {

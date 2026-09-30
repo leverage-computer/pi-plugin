@@ -11,6 +11,7 @@ export type ProviderFamily = z.infer<typeof familySchema>;
 export const memberSchema = z.object({
   id: z.string(),
   name: z.string().nullable(),
+  role: z.string().nullish(),
 });
 
 export type WorkspaceMember = z.infer<typeof memberSchema>;
@@ -51,6 +52,10 @@ export const sessionSchema = z.object({
   updatedAt: z.string().nullish(),
   requestedBranch: z.string().nullish(),
   repo: z.object({ fullName: z.string() }).nullish(),
+  ownerId: z.string().nullish(),
+  // Tokens the last model call used, and the window the provider reported.
+  contextUsedTokens: z.number().nullish(),
+  contextWindowTokens: z.number().nullish(),
 });
 
 export type WorkspaceSession = z.infer<typeof sessionSchema>;
@@ -75,7 +80,10 @@ export const inputSchema = z.object({
   createdAt: z.string(),
   attachments: z.array(attachmentSchema).nullish(),
   intent: z.string().nullish(),
+  kind: z.string().nullish(),
   queuePosition: z.number().nullish(),
+  // Where the agent's transcript took the message in.
+  consumedTranscriptSeq: z.number().nullish(),
   note: z.string().nullish(),
 });
 
@@ -97,6 +105,27 @@ export const rowDataSchema = z.record(z.string(), z.unknown()).pipe(
     tombstone: z.boolean().catch(false),
     isError: z.boolean().catch(false),
     is_error: z.boolean().catch(false),
+    // Compactions and background tasks report their phase.
+    phase: z.string().catch(""),
+    status: z.string().catch(""),
+    taskId: z.string().catch(""),
+    taskKind: z.string().catch(""),
+    backgrounded: z.boolean().catch(false),
+    // The session's first row lists the skills its folder offers.
+    directorySkills: z
+      .array(
+        z
+          .object({
+            name: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/i),
+            description: z.string().catch(""),
+          })
+          .nullable()
+          .catch(null),
+      )
+      .catch([]),
+    // A sub-agent's rows name the tool call that started it.
+    parentToolUseId: z.string().catch(""),
+    delegatedTaskId: z.string().catch(""),
     input: z.unknown().optional(),
     result: z.unknown().optional(),
     answers: z.record(z.string(), z.unknown()).catch({}),
@@ -114,9 +143,11 @@ export const rowDataSchema = z.record(z.string(), z.unknown()).pipe(
 
 export type RowData = z.infer<typeof rowDataSchema>;
 
-// What the agent asks with an ask_user row: questions and their answer options.
+// What the agent asks with an ask_user row: questions and their answer
+// options, or a plan to review.
 export const askSchema = z
   .object({
+    plan: z.string().catch(""),
     questions: z
       .array(
         z.object({
@@ -127,7 +158,7 @@ export const askSchema = z
       )
       .catch([]),
   })
-  .catch({ questions: [] });
+  .catch({ plan: "", questions: [] });
 
 // One row of the shared transcript. Its `data` depends on `kind`.
 export const transcriptEventSchema = z.object({
@@ -159,6 +190,8 @@ export const deltaSchema = z.object({
   eventId: z.string().nullish(),
   rowId: z.string().nullish(),
   toolUseId: z.string().nullish(),
+  parentToolUseId: z.string().nullish(),
+  delegatedTaskId: z.string().nullish(),
 });
 
 export type TranscriptDelta = z.infer<typeof deltaSchema>;
@@ -175,6 +208,11 @@ export const invocationSchema = z.object({
   state: z.string(),
   actingUserName: z.string().nullish(),
   connectorName: z.string().nullish(),
+  // Who the call runs as, and whose connection it goes through.
+  actingUserId: z.string().nullish(),
+  connectorScope: z.string().nullish(),
+  connectorOwnerUserId: z.string().nullish(),
+  workspaceConnectorId: z.string().nullish(),
 });
 
 export type Invocation = z.infer<typeof invocationSchema>;
@@ -294,6 +332,8 @@ export const eventSchema = z.discriminatedUnion("type", [
     turnId: z.string().nullable(),
     version: z.number(),
     archivedAt: z.string().nullish(),
+    contextUsedTokens: z.number().nullish(),
+    contextWindowTokens: z.number().nullish(),
   }),
   frameBase.extend({
     type: z.literal("session.messages.updated"),
@@ -379,6 +419,9 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     sessionId: z.string(),
     toolUseId: z.string(),
     answers: z.record(z.string(), z.string()),
+    annotations: z
+      .record(z.string(), z.object({ notes: z.string().optional() }))
+      .optional(),
     clientRequestId: z.string(),
   }),
   z.object({ type: z.literal("session.compact"), sessionId: z.string() }),
@@ -414,3 +457,108 @@ export interface SessionDraft {
   title?: string;
   sessionId?: string;
 }
+
+// Where a session keeps files: its outputs, channels, repositories and home.
+export const fileResourcesSchema = z.object({
+  resources: z.array(
+    z.object({
+      resourceId: z.string(),
+      kind: z.string(),
+      mountPath: z.string().catch(""),
+      isWorkingRoot: z.boolean().catch(false),
+      channelId: z.string().nullish(),
+      repositoryName: z.string().nullish(),
+      branch: z.string().nullish(),
+    }),
+  ),
+});
+
+export type FileResource = z.infer<
+  typeof fileResourcesSchema
+>["resources"][number];
+
+// One file or folder. Its path is relative to its resource.
+export const fileEntrySchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  type: z.enum(["file", "dir"]),
+  size: z.number().nullish(),
+  modifiedAt: z.string().nullish(),
+});
+
+export type FileEntry = z.infer<typeof fileEntrySchema>;
+
+export const fileTreeSchema = z.object({
+  path: z.string(),
+  entries: z.array(fileEntrySchema),
+  nextPageToken: z.string().nullish(),
+});
+
+// A file's text, or why it has none: binary, or over the 1 MiB inline limit.
+export const fileReadSchema = z.object({
+  path: z.string(),
+  name: z.string(),
+  byteSize: z.number(),
+  isBinary: z.boolean(),
+  tooLarge: z.boolean(),
+  content: z.string().nullish(),
+});
+
+export const fileSearchSchema = z.object({
+  entries: z.array(fileEntrySchema),
+  truncated: z.boolean(),
+});
+
+const fileChangeSchema = z.object({
+  path: z.string(),
+  oldPath: z.string().nullish(),
+  state: z.string(),
+  patch: z.string().nullish(),
+  additions: z.number().nullish(),
+  deletions: z.number().nullish(),
+});
+
+// What a session changed in each of its sources, and any pull request.
+export const fileSourcesSchema = z.object({
+  sources: z.array(
+    z.object({
+      resourceId: z.string(),
+      kind: z.string(),
+      label: z.string(),
+      branch: z.string().nullish(),
+      sourceOutOfDate: z.boolean().nullish(),
+      changes: z.array(fileChangeSchema),
+      unpublished: z.number().nullish(),
+      error: z.string().nullish(),
+      publication: z
+        .object({
+          number: z.number(),
+          url: z.string(),
+          state: z.string(),
+          draft: z.boolean().nullish(),
+        })
+        .nullish(),
+    }),
+  ),
+  working: z.boolean(),
+});
+
+export type FileSources = z.infer<typeof fileSourcesSchema>;
+
+// The workspace's connections to other apps.
+export const connectorsSchema = z.object({
+  connectors: z.array(
+    z.object({
+      id: z.string(),
+      namespace: z.string(),
+      label: z.string().nullish(),
+      scope: z.string(),
+      disabled: z.boolean().catch(false),
+      runtimeStatus: z.string().catch("unknown"),
+      catalogToolCount: z.number().nullish(),
+      description: z.string().nullish(),
+    }),
+  ),
+});
+
+export type Connector = z.infer<typeof connectorsSchema>["connectors"][number];

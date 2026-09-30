@@ -47,6 +47,8 @@ export class SharedSession {
   // Counts live approval frames, so a read that overlaps one keeps them.
   private approvalFrames = 0;
   private readonly asks = new Map<string, TranscriptEvent>();
+  // The skills the session's folder offers, from its first row.
+  skills: Array<{ name: string; description: string }> = [];
   private socket?: WorkspaceSocket;
   private readonly lifetime = new AbortController();
   private disposals: Array<() => void> = [];
@@ -195,6 +197,8 @@ export class SharedSession {
               queuedCount: update.queuedCount,
               turnId: update.turnId,
               archivedAt: update.archivedAt,
+              contextUsedTokens: update.contextUsedTokens,
+              contextWindowTokens: update.contextWindowTokens,
             };
           }
           return [];
@@ -281,10 +285,11 @@ export class SharedSession {
         }
       }
     }
+    // Rows first: they tell which messages belong to the loaded page.
     const changes = [
       ...this.history.attribute(members, this.userId),
-      ...(current ? this.messages(snapshot.messages) : []),
       ...this.transcript(snapshot.events),
+      ...(current ? this.messages(snapshot.messages) : []),
     ];
     this.socket?.subscribe(this.id, snapshot.lastCursorIncluded);
     this.hooks.changed(changes);
@@ -303,6 +308,11 @@ export class SharedSession {
   // Questions stay open until the agent records the tool result that answers them.
   private transcript(events: readonly TranscriptEvent[]): HistoryEntry[] {
     for (const event of events) {
+      if (event.kind === "session_init") {
+        this.skills = event.data.directorySkills.flatMap((one) =>
+          one ? [one] : [],
+        );
+      }
       const toolUseId = event.data.toolUseId;
       if (event.kind === "ask_user" && toolUseId) {
         this.asks.set(toolUseId, event);

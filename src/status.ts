@@ -112,11 +112,15 @@ export function footerLines(
   place: string,
   stream: string,
   model: string,
+  usage = "",
 ): string[] {
-  const state =
+  const connection =
     stream === "live"
       ? theme.fg("dim", stream)
       : theme.fg(stream === "disconnected" ? "error" : "warning", stream);
+  const state = usage
+    ? `${connection}${theme.fg("dim", ` · ${clean(usage)}`)}`
+    : connection;
   const right = theme.fg("dim", clean(model));
   const gap = width - visibleWidth(state) - visibleWidth(right);
   return [

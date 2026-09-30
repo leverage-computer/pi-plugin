@@ -35,11 +35,11 @@ Enter
 Wait+Screen@30s /Working/
 Wait+Screen@30s /0 fail/
 Sleep 1s
-Wait+Screen@60s /safe to merge/
-Sleep 2s
+# The conversation is taller than the window from here, so the recorder
+# cannot read it. The demo answers in about four seconds.
+Sleep 6s
 Type "/leverage rename Checkout test check"
 Sleep 600ms
 Enter
-Wait+Screen@10s /Checkout test check/
-Sleep 2500ms
+Sleep 3500ms
 Source "docs/demo/quit.tape"

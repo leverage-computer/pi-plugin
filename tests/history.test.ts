@@ -373,6 +373,229 @@ describe("Shared session history", () => {
     expect(history.entries()).toHaveLength(1);
   });
 
+  test("tool calls get the card their kind has in the web app", () => {
+    const history = new SharedHistory(SESSION);
+    const call = (id: string, name: string, input: unknown, output = "") => [
+      row("tool_call", { toolUseId: id, name, input }),
+      row("tool_result", { toolUseId: id, content: output }),
+    ];
+    history.apply([
+      ...call("t1", "Bash", { command: "bun test\n--watch" }, "3 pass"),
+      ...call(
+        "t2",
+        "Edit",
+        {
+          file_path: "src/cart.ts",
+          old_string: "const total = 0;",
+          new_string: "const total = sum(items);",
+        },
+        "The file was updated",
+      ),
+      ...call("t3", "ApplyPatch", {
+        changes: [
+          {
+            path: "src/a.ts",
+            kind: { type: "update" },
+            diff: "@@ -1 +1 @@\n-old line\n+new line",
+          },
+          { path: "src/b.ts", kind: { type: "add" }, diff: "created" },
+        ],
+      }),
+      ...call("t4", "TodoWrite", {
+        todos: [
+          { content: "Write tests", status: "completed" },
+          {
+            content: "Fix bug",
+            activeForm: "Fixing the bug",
+            status: "in_progress",
+          },
+          { content: "Ship", status: "pending" },
+        ],
+      }),
+      ...call(
+        "t5",
+        "Read",
+        { file_path: "README.md" },
+        "     1\t# Title\n     2\tBody",
+      ),
+      ...call("t6", "Task", {
+        description: "Find flaky tests",
+        subagent_type: "Explore",
+        prompt: "Look everywhere",
+        run_in_background: true,
+      }),
+      ...call("t7", "mcp__linear__create_issue", { title: "Bug" }, "Created"),
+      ...call("t8", "Write", {
+        file_path: "/home/.claude/plans/ship.md",
+        content: "# Ship it\n1. Migrate",
+      }),
+      ...call("t9", "ExitPlanMode", {}),
+    ]);
+    const [shell, edit, patch, todos, read, task, mcp, , plan] = history
+      .entries()
+      .map((entry) => shown(entry));
+    expect(shell).toContain("$ bun test");
+    expect(shell).toContain("3 pass");
+    expect(edit).toContain("Edit src/cart.ts");
+    expect(edit).toMatch(/-\s*1 const total = 0;/);
+    expect(edit).toMatch(/\+\s*1 const total = sum\(items\);/);
+    expect(edit).not.toContain("The file was updated");
+    expect(patch).toContain("Patch 2 files");
+    expect(patch).toContain("src/b.ts");
+    expect(patch).toContain("new line");
+    expect(todos).toContain("Todos 1/3 done");
+    expect(todos).toContain("✓ Write tests");
+    expect(todos).toContain("▸ Fixing the bug");
+    expect(todos).toContain("☐ Ship");
+    expect(read).toContain("Read README.md");
+    expect(read).toContain("# Title");
+    expect(read).not.toContain("1\t# Title");
+    expect(task).toContain("Task Find flaky tests · Explore · background");
+    expect(mcp).toContain("mcp__linear__create_issue");
+    expect(mcp).toContain("Created");
+    expect(plan).toContain("Plan");
+    expect(plan).toContain("Ship it");
+    expect(plan).toContain("1. Migrate");
+  });
+
+  test("a stopped turn keeps its unfinished answer", () => {
+    const history = new SharedHistory(SESSION);
+    history.attribute([{ id: "owner", name: "Alice" }], "owner");
+    const streaming = row("text", { content: "", eventId: "evt_cut" });
+    history.apply([streaming]);
+    history.delta({
+      kind: "text",
+      streamId: "evt_cut",
+      eventId: "evt_cut",
+      rowId: streaming.id,
+      delta: "The first half of the ans",
+      offset: 0,
+    });
+    history.apply([
+      row("interrupted", { cause: "user_stop" }, { authorId: "owner" }),
+    ]);
+    const [answer, stopped] = history.entries();
+    expect(answer?.content).toContain("The first half of the ans");
+    expect(stopped?.content).toContain("Stopped by Alice (you)");
+  });
+
+  test("reopening keeps every message, including ones sent mid-turn", () => {
+    const history = new SharedHistory(SESSION);
+    const first = input("Run the tests", { status: "consumed" });
+    const steer = input("Only the checkout ones", {
+      status: "consumed",
+      intent: "steer",
+    });
+    const later = input("And lint too", { status: "consumed" });
+    const older = input("From an older page", {
+      status: "consumed",
+      consumedTranscriptSeq: 1,
+    });
+    const rows = [
+      row(
+        "user",
+        { content: "### Alice\nRun the tests\nOnly the checkout ones" },
+        { sourceInputUuids: [first.uuid, steer.uuid] },
+      ),
+      row("text", { content: "Running them", finalized: true }),
+      row("text", { content: "All pass", finalized: true }),
+    ];
+    history.apply(rows);
+    history.messages([
+      first,
+      steer,
+      { ...later, consumedTranscriptSeq: rows[1]?.transcriptSeq },
+      older,
+    ]);
+    expect(
+      history
+        .entries()
+        .map((entry) => entry.content.split("\n").slice(1).join(" ")),
+    ).toEqual([
+      "Run the tests",
+      "Only the checkout ones",
+      "Running them",
+      "And lint too",
+      "All pass",
+    ]);
+  });
+
+  test("a sub-agent works inside its Task card, and background work stays open", () => {
+    const history = new SharedHistory(SESSION);
+    history.apply([
+      row("tool_call", {
+        toolUseId: "toolu_task",
+        name: "Task",
+        input: { description: "Find flaky tests", subagent_type: "Explore" },
+      }),
+      row("task", {
+        taskId: "task_1",
+        taskKind: "agent",
+        phase: "started",
+        toolUseId: "toolu_task",
+      }),
+      row("tool_call", {
+        toolUseId: "toolu_child",
+        name: "Grep",
+        input: { pattern: "sleep(" },
+        parentToolUseId: "toolu_task",
+      }),
+      row("text", {
+        content: "Found one flaky test",
+        eventId: "child_text",
+        finalized: true,
+        delegatedTaskId: "task_1",
+      }),
+      row("tool_result", { toolUseId: "toolu_task", content: "Done" }),
+      row("tool_call", {
+        toolUseId: "toolu_bg",
+        name: "Bash",
+        input: { command: "bun run dev", run_in_background: true },
+      }),
+      row("tool_result", { toolUseId: "toolu_bg", content: "Started" }),
+      row("task", {
+        taskId: "task_2",
+        phase: "started",
+        backgrounded: true,
+        toolUseId: "toolu_bg",
+      }),
+      row("compaction", { phase: "started", trigger: "manual" }),
+    ]);
+    history.delta({
+      kind: "text",
+      streamId: "child_stream",
+      rowId: "child_row",
+      delta: "Thinking in the sub-agent",
+      offset: 0,
+      delegatedTaskId: "task_1",
+    });
+    const [task, background, compaction] = history.entries();
+    expect(history.entries()).toHaveLength(3);
+    expect(shown(task)).toContain("Task Find flaky tests · Explore");
+    expect(shown(task)).toContain("↳ Grep sleep(");
+    expect(shown(task)).toContain("↳ Found one flaky test");
+    expect(background?.content).toContain("Bash · running in the background");
+    expect(shown(background)).toContain("running in the background");
+    expect(compaction?.content).toContain("Compacting context…");
+
+    history.apply([
+      row("task", {
+        taskId: "task_2",
+        phase: "settled",
+        status: "completed",
+        toolUseId: "toolu_bg",
+      }),
+      row("compaction", { phase: "completed", trigger: "manual" }),
+    ]);
+    const entries = history.entries();
+    expect(entries).toHaveLength(3);
+    expect(entries[1]?.content).toContain("Bash · completed in the background");
+    expect(entries[2]?.content).toContain("Context compacted");
+    expect(entries.map((one) => one.content).join("\n")).not.toContain(
+      "Compacting",
+    );
+  });
+
   test("a failed tool shows its error and a result without text shows its value", () => {
     const history = new SharedHistory(SESSION);
     history.apply([
@@ -398,7 +621,7 @@ describe("Shared session history", () => {
     const rendered = raw(failed);
     expect(rendered).toContain(theme.getBgAnsi("toolErrorBg"));
     const text = stripVTControlCharacters(rendered);
-    expect(text).toContain("read README.md");
+    expect(text).toContain("Read README.md");
     expect(text).toContain("Missing file");
     expect(text).not.toContain('"error"');
     expect(found?.content).toContain("search · completed");
