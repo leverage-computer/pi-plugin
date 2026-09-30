@@ -25,6 +25,11 @@ export const channelSchema = z.object({
 
 export type Channel = z.infer<typeof channelSchema>;
 
+// The person's Leverage settings. A missing list leaves out nothing.
+export const preferencesSchema = z.object({
+  piExcludedChannelIds: z.array(z.string()).default([]),
+});
+
 // Why a session waits for a person, if it does.
 export const awaitingSchema = z
   .union([

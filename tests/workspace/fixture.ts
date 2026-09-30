@@ -2,6 +2,7 @@ import type { ServerWebSocket } from "bun";
 import { api } from "../../src/api";
 import { workspace } from "../../src/workspace/api";
 import type {
+  Channel,
   HostedModel,
   Invocation,
   SessionInput,
@@ -84,6 +85,14 @@ type Extra = (
 export function workspaceFixture(extra?: Extra) {
   const session = exampleSession();
   const sessions: Array<WorkspaceSession & { visibility: string }> = [session];
+  const channels: Channel[] = [
+    {
+      id: "general",
+      name: "general",
+      kind: "channel",
+      defaultProviderFamily: "claude_code",
+    },
+  ];
   const grants: Array<{
     principalType: "user" | "channel";
     principalId: string;
@@ -118,6 +127,7 @@ export function workspaceFixture(extra?: Extra) {
     nativeMessages: [] as SessionInput[],
     queue: [] as SessionInput[],
     catalog: [hostedModel] as HostedModel[],
+    preferences: {} as Record<string, unknown>,
   };
   const created = new Set<string>();
   const canRead = (user: string) =>
@@ -231,14 +241,10 @@ export function workspaceFixture(extra?: Extra) {
         ]);
       }
       if (path === "/api/channels") {
-        return Response.json([
-          {
-            id: "general",
-            name: "general",
-            kind: "channel",
-            defaultProviderFamily: "claude_code",
-          },
-        ]);
+        return Response.json(channels);
+      }
+      if (path === "/api/user/preferences") {
+        return Response.json(state.preferences);
       }
       if (path === "/api/sessions") {
         return Response.json(canRead(user) ? sessions : []);
@@ -590,6 +596,7 @@ export function workspaceFixture(extra?: Extra) {
   return {
     session,
     sessions,
+    channels,
     grants,
     requests,
     frames,

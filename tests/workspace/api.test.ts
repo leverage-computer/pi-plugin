@@ -53,6 +53,16 @@ test("a default-model session is created even when the model catalog is missing"
   );
 });
 
+test("a missing Pi channel choice leaves out nothing, and a malformed one fails", async () => {
+  const f = fixture();
+  const api = f.client();
+  expect(await api.excludedChannels()).toEqual([]);
+  f.state.preferences = { piExcludedChannelIds: ["general"] };
+  expect(await api.excludedChannels()).toEqual(["general"]);
+  f.state.preferences = { piExcludedChannelIds: "general" };
+  await rejects(api.excludedChannels());
+});
+
 test("a lost creation acknowledgement retries the stable request ID without duplicating a session", async () => {
   const f = fixture();
   const api = f.client();

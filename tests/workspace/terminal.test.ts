@@ -244,3 +244,31 @@ test("files, changes and connections open from the session like in the web app",
   await ui.wait("Linear");
   await ui.wait("12 tools");
 }, 60000);
+
+test("Pi leaves out the channels excluded in Leverage Settings and reads the choice each time a list opens", async () => {
+  const ui = await terminal(120);
+  ui.f.channels.push({ id: "private", name: "private", kind: "channel" });
+  ui.f.sessions.push({
+    ...exampleSession(),
+    id: "22222222-2222-4222-8222-222222222222",
+    title: "Private plans",
+    channelId: "private",
+  });
+  // With no choice saved, every channel and its sessions are listed.
+  await ui.key("\x1bOR");
+  await ui.wait("Private plans #private");
+  await ui.key("\x1b");
+  await ui.key("\x1bOP");
+  await ui.wait("#private");
+  await ui.key("\x1b");
+  ui.f.state.preferences = { piExcludedChannelIds: ["private"] };
+  await ui.key("\x1bOR");
+  await ui.wait("Shared work");
+  await ui.key("Private plans");
+  await ui.wait("No matching items");
+  await ui.key("\x1b");
+  await ui.key("\x1bOP");
+  await ui.wait("#general");
+  await ui.key("private");
+  await ui.wait("No matching items");
+}, 45000);

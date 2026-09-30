@@ -27,6 +27,7 @@ import {
   type ProviderAvailability,
   type ProviderFamily,
   pendingApprovalsSchema,
+  preferencesSchema,
   providerAvailabilitySchema,
   queueSchema,
   type SessionDraft,
@@ -184,6 +185,17 @@ export class WorkspaceClient {
 
   channels(signal?: AbortSignal) {
     return this.scoped("/api/channels", z.array(channelSchema), signal);
+  }
+
+  /** The channels this person leaves out of Pi in Leverage Settings. */
+  async excludedChannels(signal?: AbortSignal): Promise<string[]> {
+    // Preferences belong to the person, not the workspace.
+    const preferences = await this.read(
+      "/api/user/preferences",
+      preferencesSchema,
+      signal,
+    );
+    return preferences.piExcludedChannelIds;
   }
 
   sessions(signal?: AbortSignal, archived = false) {

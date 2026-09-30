@@ -144,6 +144,9 @@ Most people never need these. Pi uses your `leverage login` by default.
 | The workspace | `--leverage-workspace <name>` |
 | Open a session as Pi starts | `--leverage-session <id>` |
 
+To choose which channels Pi shows, open Leverage and go to **Settings →
+Integrations → What each app gets**.
+
 ## For developers
 
 You need Bun 1.4.2, Python 3 and macOS or Linux.

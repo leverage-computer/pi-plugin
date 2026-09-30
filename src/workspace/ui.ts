@@ -67,10 +67,11 @@ export async function editDraft(
       });
       return;
     }
-    const [providers, channels, models] = await Promise.all([
+    const [providers, channels, models, excluded] = await Promise.all([
       workspace.providers(signal),
       workspace.channels(signal),
       workspace.models(signal),
+      workspace.excludedChannels(signal),
     ]);
     action ??= await chooseDrawer(ctx, {
       title: "New session settings",
@@ -105,12 +106,14 @@ export async function editDraft(
           detail: "No channel",
           current: context.type === "none",
         },
-        ...channels.map((one) => ({
-          value: one.id,
-          label: `#${one.name ?? "channel"}`,
-          detail: "Channel",
-          current: context.type === "channel" && context.channelId === one.id,
-        })),
+        ...channels
+          .filter((one) => !excluded.includes(one.id))
+          .map((one) => ({
+            value: one.id,
+            label: `#${one.name ?? "channel"}`,
+            detail: "Channel",
+            current: context.type === "channel" && context.channelId === one.id,
+          })),
       ];
       const picked = await chooseDrawer(ctx, {
         title: "Session context",
@@ -231,15 +234,23 @@ export async function sessionsDrawer(
   const socket = await workspace.socket(signal);
   void socket.connect().catch(() => {});
   while (!signal.aborted) {
-    const channels = await workspace.channels(signal);
+    const [channels, excluded] = await Promise.all([
+      workspace.channels(signal),
+      workspace.excludedChannels(signal),
+    ]);
     const home = channels.find(
       (one) =>
         api.connection.directory === `/${api.connection.workspace}/${one.name}`,
     );
     const listed = async () => {
       const sessions = await workspace.sessions(signal, archived);
+      // The channel --leverage-directory names stays listed, even when left out.
       return sessions.filter(
-        (one) => !scoped || !home || one.channelId === home.id,
+        (one) =>
+          (!scoped || !home || one.channelId === home.id) &&
+          (!one.channelId ||
+            one.channelId === home?.id ||
+            !excluded.includes(one.channelId)),
       );
     };
     const fixed = (): DrawerItem[] => [
