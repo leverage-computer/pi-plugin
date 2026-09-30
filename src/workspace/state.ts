@@ -44,6 +44,8 @@ export class SharedSession {
   readonly history: SharedHistory;
   private readonly inputs = new Map<string, SessionInput>();
   private readonly approvals = new Map<string, Invocation>();
+  // Counts live approval frames, so a read that overlaps one keeps them.
+  private approvalFrames = 0;
   private readonly asks = new Map<string, TranscriptEvent>();
   private socket?: WorkspaceSocket;
   private readonly lifetime = new AbortController();
@@ -213,6 +215,7 @@ export class SharedSession {
       Match.when(
         { type: "session.approval.pending", sessionId: mine },
         ({ invocation }) => {
+          this.approvalFrames++;
           this.approvals.set(invocation.id, invocation);
           return [];
         },
@@ -220,6 +223,7 @@ export class SharedSession {
       Match.when(
         { type: "session.approval.updated", sessionId: mine },
         ({ invocation }) => {
+          this.approvalFrames++;
           if (invocation.state === "pending_approval") {
             this.approvals.set(invocation.id, invocation);
           } else {
@@ -252,6 +256,7 @@ export class SharedSession {
   }
 
   private async read(): Promise<void> {
+    const approvalFrames = this.approvalFrames;
     const [snapshot, members] = await Promise.all([
       workspace.bootstrap(this.id, this.lifetime.signal),
       workspace.members(this.lifetime.signal),
@@ -267,10 +272,13 @@ export class SharedSession {
       this.session = snapshot.session;
       this.version = snapshot.version;
     }
-    this.approvals.clear();
-    for (const invocation of snapshot.toolApprovals) {
-      if (invocation.state === "pending_approval") {
-        this.approvals.set(invocation.id, invocation);
+    // Approvals carry no version. A live frame during the read is newer.
+    if (approvalFrames === this.approvalFrames) {
+      this.approvals.clear();
+      for (const invocation of snapshot.toolApprovals) {
+        if (invocation.state === "pending_approval") {
+          this.approvals.set(invocation.id, invocation);
+        }
       }
     }
     const changes = [

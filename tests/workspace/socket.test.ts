@@ -134,16 +134,18 @@ test("live rows, streamed text and status changes reach the conversation", async
 test("tracks approvals and questions until someone resolves them", async () => {
   const { f, shared } = await open();
   const pending = invocation();
+  f.approvals.push(pending);
   f.publish({
     type: "session.approval.pending",
     sessionId: SESSION,
     invocation: pending,
   });
   await eventually(() => shared.pendingApprovals().length === 1);
+  f.approvals[0] = { ...pending, state: "approved" };
   f.publish({
     type: "session.approval.updated",
     sessionId: SESSION,
-    invocation: { ...pending, state: "approved" },
+    invocation: f.approvals[0],
   });
   await eventually(() => shared.pendingApprovals().length === 0);
   f.emit("ask_user", {
@@ -222,4 +224,22 @@ test("a stale read cannot overwrite a newer message update", async () => {
   });
   await Bun.sleep(20);
   expect(shared.input(bob.uuid)?.content).toBe("From Bob");
+});
+
+test("a read that overlaps a live approval keeps it", async () => {
+  const { f, shared } = await open();
+  let release!: () => void;
+  f.state.readDelay = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const refreshing = shared.refresh();
+  f.publish({
+    type: "session.approval.pending",
+    sessionId: SESSION,
+    invocation: invocation(),
+  });
+  await eventually(() => shared.pendingApprovals().length === 1);
+  release();
+  await refreshing;
+  expect(shared.pendingApprovals()).toHaveLength(1);
 });
