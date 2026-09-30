@@ -108,6 +108,8 @@ function addSession(options: {
       status: "idle",
       turnId: null,
       updatedAt: minutesAgo(options.updated),
+      ownerId: ME.id,
+      visibility: options.channelId ? "channel" : "private",
       ...(options.repo
         ? { repo: { fullName: options.repo }, requestedBranch: "main" }
         : {}),
@@ -425,9 +427,13 @@ function route(request: Request, url: URL, body: unknown) {
       CHANNELS.map((one) => ({ ...one, defaultProviderFamily: "claude_code" })),
     );
   }
-  // Nothing is left out, so the demo lists the channels the recorded videos show.
+  // Nothing is left out, so the demo lists what the recorded videos show.
   if (path === "/api/user/preferences") {
-    return Response.json({ piExcludedChannelIds: [] });
+    return Response.json({
+      piExcludedChannelIds: [],
+      piShowStandaloneSessions: true,
+      piShowSharedSessions: true,
+    });
   }
   if (path.endsWith("/provider-access/availability")) {
     return Response.json({ claude_code: true, codex: true });

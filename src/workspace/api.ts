@@ -187,15 +187,19 @@ export class WorkspaceClient {
     return this.scoped("/api/channels", z.array(channelSchema), signal);
   }
 
-  /** The channels this person leaves out of Pi in Leverage Settings. */
-  async excludedChannels(signal?: AbortSignal): Promise<string[]> {
+  /** What this person chose to show in Pi in Leverage Settings. */
+  async choices(signal?: AbortSignal) {
     // Preferences belong to the person, not the workspace.
     const preferences = await this.read(
       "/api/user/preferences",
       preferencesSchema,
       signal,
     );
-    return preferences.piExcludedChannelIds;
+    return {
+      excludedChannelIds: preferences.piExcludedChannelIds,
+      showStandalone: preferences.piShowStandaloneSessions,
+      showShared: preferences.piShowSharedSessions,
+    };
   }
 
   sessions(signal?: AbortSignal, archived = false) {

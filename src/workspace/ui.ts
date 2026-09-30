@@ -67,12 +67,13 @@ export async function editDraft(
       });
       return;
     }
-    const [providers, channels, models, excluded] = await Promise.all([
-      workspace.providers(signal),
-      workspace.channels(signal),
-      workspace.models(signal),
-      workspace.excludedChannels(signal),
-    ]);
+    const [providers, channels, models, { excludedChannelIds }] =
+      await Promise.all([
+        workspace.providers(signal),
+        workspace.channels(signal),
+        workspace.models(signal),
+        workspace.choices(signal),
+      ]);
     action ??= await chooseDrawer(ctx, {
       title: "New session settings",
       items: [
@@ -107,7 +108,7 @@ export async function editDraft(
           current: context.type === "none",
         },
         ...channels
-          .filter((one) => !excluded.includes(one.id))
+          .filter((one) => !excludedChannelIds.includes(one.id))
           .map((one) => ({
             value: one.id,
             label: `#${one.name ?? "channel"}`,
@@ -232,11 +233,12 @@ export async function sessionsDrawer(
   let archived = false;
   let scoped = true;
   const socket = await workspace.socket(signal);
-  void socket.connect().catch(() => {});
+  // The connection names the viewer, which tells whose sessions are shared.
+  await socket.connect().catch(() => {});
   while (!signal.aborted) {
-    const [channels, excluded] = await Promise.all([
+    const [channels, choices] = await Promise.all([
       workspace.channels(signal),
-      workspace.excludedChannels(signal),
+      workspace.choices(signal),
     ]);
     const home = channels.find(
       (one) =>
@@ -244,13 +246,23 @@ export async function sessionsDrawer(
     );
     const listed = async () => {
       const sessions = await workspace.sessions(signal, archived);
-      // The channel --leverage-directory names stays listed, even when left out.
+      const viewer = socket.userId;
       return sessions.filter(
         (one) =>
           (!scoped || !home || one.channelId === home.id) &&
+          // The channel --leverage-directory names stays listed, even when left out.
           (!one.channelId ||
             one.channelId === home?.id ||
-            !excluded.includes(one.channelId)),
+            !choices.excludedChannelIds.includes(one.channelId)) &&
+          // A standalone session has no channel and no repository.
+          (choices.showStandalone || one.channelId || one.repo) &&
+          // A shared session is someone else's, and its channel does not show it.
+          // Without a known owner or viewer, the session is not hidden.
+          (choices.showShared ||
+            !one.ownerId ||
+            !viewer ||
+            one.ownerId === viewer ||
+            one.visibility === "channel"),
       );
     };
     const fixed = (): DrawerItem[] => [

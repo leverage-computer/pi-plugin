@@ -25,9 +25,11 @@ export const channelSchema = z.object({
 
 export type Channel = z.infer<typeof channelSchema>;
 
-// The person's Leverage settings. A missing list leaves out nothing.
+// The person's Leverage settings for Pi. A missing choice leaves out nothing.
 export const preferencesSchema = z.object({
   piExcludedChannelIds: z.array(z.string()).default([]),
+  piShowStandaloneSessions: z.boolean().default(true),
+  piShowSharedSessions: z.boolean().default(true),
 });
 
 // Why a session waits for a person, if it does.
@@ -58,6 +60,7 @@ export const sessionSchema = z.object({
   requestedBranch: z.string().nullish(),
   repo: z.object({ fullName: z.string() }).nullish(),
   ownerId: z.string().nullish(),
+  visibility: z.string().nullish(),
   // Tokens the last model call used, and the window the provider reported.
   contextUsedTokens: z.number().nullish(),
   contextWindowTokens: z.number().nullish(),

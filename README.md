@@ -145,7 +145,8 @@ Most people never need these. Pi uses your `leverage login` by default.
 | Open a session as Pi starts | `--leverage-session <id>` |
 
 To choose which channels Pi shows, open Leverage and go to **Settings →
-Integrations → What each app gets**.
+Integrations → What each app gets**. There you also choose if Pi lists
+standalone sessions and sessions other people share with you.
 
 ## For developers
 

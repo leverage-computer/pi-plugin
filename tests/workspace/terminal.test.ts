@@ -272,3 +272,44 @@ test("Pi leaves out the channels excluded in Leverage Settings and reads the cho
   await ui.key("private");
   await ui.wait("No matching items");
 }, 45000);
+
+test("Pi lists standalone and shared sessions only when Leverage Settings shows them", async () => {
+  const ui = await terminal(120);
+  ui.f.sessions.push(
+    {
+      ...exampleSession(),
+      id: "22222222-2222-4222-8222-222222222222",
+      title: "Bob's private notes",
+      channelId: "general",
+      ownerId: "bob",
+      visibility: "private",
+    },
+    {
+      ...exampleSession(),
+      id: "33333333-3333-4333-8333-333333333333",
+      title: "Bob's channel work",
+      channelId: "general",
+      ownerId: "bob",
+      visibility: "channel",
+    },
+  );
+  // With no choice saved, every session is listed.
+  await ui.key("\x1bOR");
+  await ui.wait("Shared work Standalone");
+  await ui.wait("Bob's private notes #general");
+  await ui.wait("Bob's channel work #general");
+  await ui.key("\x1b");
+  ui.f.state.preferences = { piShowStandaloneSessions: false };
+  await ui.key("\x1bOR");
+  await ui.wait("Bob's private notes #general");
+  await ui.key("Shared work");
+  await ui.wait("No matching items");
+  await ui.key("\x1b");
+  // A session someone else owns stays listed when its channel shows it.
+  ui.f.state.preferences = { piShowSharedSessions: false };
+  await ui.key("\x1bOR");
+  await ui.wait("Shared work Standalone");
+  await ui.wait("Bob's channel work #general");
+  await ui.key("private notes");
+  await ui.wait("No matching items");
+}, 45000);
