@@ -229,6 +229,14 @@ const DELIVERY: Record<string, [string, ThemeColor]> = {
   unknown: ["Delivery unknown", "warning"],
 };
 
+// Apps a person can send a message from. Leverage's own clients get no label.
+const SENT_FROM = new Map([
+  ["codex", "Codex"],
+  ["claude", "Claude"],
+  ["opencode", "OpenCode"],
+  ["pi", "Pi"],
+]);
+
 // Tool results arrive as JSON text.
 const toolFailure = z.object({ error: z.string() });
 const planInput = z.looseObject({ plan: z.string().catch("") }).catch({
@@ -428,6 +436,7 @@ export function createHistoryComponent(
     const author = clean(entry.author ?? "User");
     const own = author.endsWith(" (you)");
     const [state, tone] = DELIVERY[entry.status ?? ""] ?? [];
+    const app = SENT_FROM.get(entry.harness ?? "");
     card.addChild(
       new Text(
         [
@@ -441,12 +450,7 @@ export function createHistoryComponent(
                 `  ${new Date(entry.created).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
               )
             : "",
-          entry.harness === "codex" || entry.harness === "claude"
-            ? theme.fg(
-                "muted",
-                ` · Sent from ${entry.harness === "codex" ? "Codex" : "Claude"}`,
-              )
-            : "",
+          app ? theme.fg("muted", ` · Sent from ${app}`) : "",
           state && tone ? theme.fg(tone, ` · ${state}`) : "",
         ].join(""),
         0,

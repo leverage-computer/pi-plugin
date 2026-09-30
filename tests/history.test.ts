@@ -139,6 +139,14 @@ describe("Shared session history", () => {
     const text = shown(canonical);
     expect(text).toContain("Bob");
     expect(text).toContain("Sent from Codex");
+    expect(shown({ ...canonical!, harness: "opencode" })).toContain(
+      "Sent from OpenCode",
+    );
+    expect(shown({ ...canonical!, harness: "pi" })).toContain("Sent from Pi");
+    // Leverage's own clients stay unlabeled.
+    expect(shown({ ...canonical!, harness: "leverage/cli" })).not.toContain(
+      "Sent from",
+    );
     expect(text).toContain("Delivered");
     expect(text).toContain("Canonical content");
     expect(text).not.toContain("Impersonator");

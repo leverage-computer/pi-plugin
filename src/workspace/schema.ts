@@ -389,7 +389,7 @@ export const sessionCreateSchema = z.object({
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
   checkoutStrategy: z.literal("clone"),
-  harness: z.literal("leverage/cli"),
+  harness: z.literal("pi"),
 });
 
 export const sessionMessageSchema = z.object({
@@ -401,7 +401,7 @@ export const sessionMessageSchema = z.object({
   attachmentIds: z.array(z.string()).optional(),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
-  harness: z.literal("leverage/cli"),
+  harness: z.literal("pi"),
 });
 
 export const clientFrameSchema = z.discriminatedUnion("type", [

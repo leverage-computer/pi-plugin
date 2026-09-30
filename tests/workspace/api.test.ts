@@ -30,7 +30,7 @@ test("creating a session sends its title with the empty first message", async ()
   const create = f.frames.find((frame) => frame.type === "session.create")!;
   expect(create.prompt).toBe("");
   expect(create.title).toBe("Named draft");
-  expect(create.harness).toBe("leverage/cli");
+  expect(create.harness).toBe("pi");
   expect(f.session.title).toBe("Named draft");
   // A created draft reuses its session instead of asking for another.
   expect(await api.create(draft, new AbortController().signal)).toBe(SESSION);
@@ -120,7 +120,7 @@ test("a message resolves once Leverage stores it, and an unconfirmed one fails",
   expect(stored.content).toBe("Run the tests");
   const frame = f.frames.find((one) => one.type === "session.message")!;
   expect(frame.delivery).toBe("send");
-  expect(frame.harness).toBe("leverage/cli");
+  expect(frame.harness).toBe("pi");
   f.state.dropMessageAck = true;
   const life = new AbortController();
   const lost = api.send(

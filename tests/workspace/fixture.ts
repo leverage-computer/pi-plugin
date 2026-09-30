@@ -522,7 +522,7 @@ export function workspaceFixture(extra?: Extra) {
               sessionId: String(frame.sessionId),
               authorId: ws.data.user,
               authorName: ws.data.user === "owner" ? "Alice" : "Bob",
-              harness: "leverage/cli",
+              harness: String(frame.harness),
               status: frame.delivery === "queue" ? "queued" : "received",
             });
             state.nativeMessages = [

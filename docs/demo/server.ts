@@ -599,7 +599,7 @@ function receive(socket: ServerWebSocket<unknown>, frame: ClientFrame) {
         sessionId: session.head.id,
         authorId: ME.id,
         authorName: ME.name,
-        harness: "leverage/cli",
+        harness: frame.harness,
         content: frame.content,
         status: "received",
         createdAt: new Date().toISOString(),

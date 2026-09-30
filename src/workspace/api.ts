@@ -484,7 +484,7 @@ export class WorkspaceClient {
         model: draft.model,
         reasoningEffort: draft.reasoningEffort,
         checkoutStrategy: "clone",
-        harness: "leverage/cli",
+        harness: "pi",
       });
       // The socket owns the "not confirmed" outcome, so the signal goes to it.
       const reply = yield* Effect.tryPromise({
@@ -520,7 +520,7 @@ export class WorkspaceClient {
       type: "session.message",
       sessionId,
       ...message,
-      harness: "leverage/cli",
+      harness: "pi",
     });
     const reply = await socket.request(
       frame,
