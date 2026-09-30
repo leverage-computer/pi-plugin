@@ -228,6 +228,8 @@ test("a stale read cannot overwrite a newer message update", async () => {
 
 test("a read that overlaps a live approval keeps it", async () => {
   const { f, shared } = await open();
+  // Startup may still be reading. Only the read below should overlap the frame.
+  await shared.refresh();
   let release!: () => void;
   f.state.readDelay = new Promise<void>((resolve) => {
     release = resolve;
