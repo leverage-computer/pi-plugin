@@ -18,7 +18,12 @@ pi install git:github.com/thepresciencecompany/pi-plugin
 pi
 ```
 
-That's it. Pi opens, and you can start typing.
+That's it. Pi opens as it always does. Leverage only shows up when you ask
+for it:
+
+- Type `/leverage new` to start a session.
+- Type `/leverage` to open one your team started.
+- Type `/leverage exit` to go back to plain Pi.
 
 ## How to use it
 
@@ -26,8 +31,8 @@ That's it. Pi opens, and you can start typing.
 
 ![Starting a session](docs/media/01-new-session.png)
 
-- Type what you need and press **Enter**.
-- Your first message starts a new session.
+- Type `/leverage new`, then type what you need and press **Enter**.
+- Your first message starts the session.
 - You'll see **Working** while the agent is busy.
 - Want a different model? Press **F2**. In an open session, it switches with
   your next message.
@@ -38,7 +43,7 @@ That's it. Pi opens, and you can start typing.
 
 ![Finding and opening a session](docs/media/02-sessions.gif)
 
-- Press **F3** to see all sessions.
+- Type `/leverage` to see all sessions. Already in one? Press **F3**.
 - Type a few letters to find one, then press **Enter**.
 - You'll see who wrote each message.
 - Anything you send shows up for everyone.
@@ -58,8 +63,13 @@ That's it. Pi opens, and you can start typing.
 
 ## Handy commands
 
+These keys work once you're in a Leverage session.
+
 | Type or press | What happens |
 | --- | --- |
+| `/leverage new` | Start a new session |
+| `/leverage` | Find and open a session |
+| `/leverage exit` | Go back to plain Pi |
 | **F1** | Pick a channel for a new session |
 | **F2** | Pick a model |
 | **F3** | Find and open a session |
@@ -97,7 +107,7 @@ Then, in a second terminal window:
 LEVERAGE_HOST=http://127.0.0.1:4545 LEVERAGE_WORKSPACE=acme LEVERAGE_TOKEN=demo pi -e .
 ```
 
-- Ask anything, and the agent runs some tests.
+- Type `/leverage new`, then ask anything. The agent runs some tests.
 - Ask it to "deploy", and it asks for your approval first.
 
 ## Settings
@@ -108,7 +118,7 @@ Most people never need these. Pi uses your `leverage login` by default.
 | --- | --- |
 | The server | `--leverage-host https://…` |
 | The workspace | `--leverage-workspace <name>` |
-| Open a specific session | `--leverage-session <id>` |
+| Open a session as Pi starts | `--leverage-session <id>` |
 
 ## For developers
 

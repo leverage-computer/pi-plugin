@@ -271,8 +271,14 @@ describe("Pi hosted frontend", () => {
     expect(runner.createContext().sessionManager.getBranch()).toEqual([]);
   });
 
-  test("disconnected manual shell commands cannot fall back to the local machine", async () => {
+  test("manual shell commands in a Leverage view cannot fall back to the local machine", async () => {
+    const f = leverage(() =>
+      Response.json({ error: "Access denied" }, { status: 403 }),
+    );
     const runner = await load();
+    f.configure(runner, SESSION);
+    runner.setUIContext({ ...runner.getUIContext(), notify: () => {} });
+    await runner.emit({ type: "session_start", reason: "startup" });
     const directory = runner.createContext().cwd;
     const sentinel = join(directory, "should-not-exist");
     const shell = `touch '${sentinel}'`;
@@ -367,9 +373,14 @@ describe("Pi hosted frontend", () => {
     expect(f.sent("session.message")).toHaveLength(2);
   }, 15000);
 
-  test("startup leaves the normal composer empty without opening a picker or creating a remote session", async () => {
+  test("Pi stays itself until /leverage opens a view", async () => {
     const f = leverage();
-    const runner = await load();
+    const manager = SessionManager.inMemory(temporaryDirectory());
+    const toolSelections: string[][] = [];
+    const runner = await load({
+      manager,
+      activeTools: (names) => toolSelections.push(names),
+    });
     f.configure(runner);
     const widgets: string[][] = [];
     runner.setUIContext(
@@ -387,18 +398,47 @@ describe("Pi hosted frontend", () => {
       "tui",
     );
     await runner.emit({ type: "session_start", reason: "startup" });
+    expect(
+      await runner.emitInput("Answer locally", undefined, "interactive"),
+    ).toEqual({ action: "continue" });
+    expect(
+      await runner.emitUserBash({
+        type: "user_bash",
+        command: "ls",
+        cwd: manager.getCwd(),
+        excludeFromContext: false,
+      }),
+    ).toBeUndefined();
+    expect(toolSelections).toEqual([]);
+    expect(widgets).toEqual([]);
+    expect(f.requests).toEqual([]);
+    expect(f.connections.size).toBe(0);
+
+    commandActions(runner, {
+      newSession: async (options) => {
+        await options?.setup?.(manager);
+        await runner.emit({ type: "session_start", reason: "new" });
+        return { cancelled: false };
+      },
+    });
+    await command(runner, "new");
     await eventually(() =>
       widgets.some((lines) =>
         lines.some((line) => line.includes("Standalone")),
       ),
     );
     expect(widgets.flat().join("\n")).toContain("New Leverage session");
+    expect(toolSelections).toEqual([[]]);
     expect(f.requests.every((request) => request.method === "GET")).toBe(true);
     expect(f.state.createCount).toBe(0);
     expect(f.sent("session.create")).toEqual([]);
+    expect(sessionLink(manager.getBranch())).toBeUndefined();
+    // The draft stays a Leverage view when Pi reloads it.
+    await runner.emit({ type: "session_start", reason: "reload" });
+    expect(toolSelections).toEqual([[], []]);
     expect(
-      sessionLink(runner.createContext().sessionManager.getBranch()),
-    ).toBeUndefined();
+      await runner.emitInput("Still remote", undefined, "interactive"),
+    ).toEqual({ action: "handled" });
   });
 
   test("new sessions create a local draft without a remote task or prompt", async () => {

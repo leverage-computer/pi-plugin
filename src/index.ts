@@ -18,6 +18,7 @@ import {
   historyMarkerSchema,
 } from "./history";
 import {
+  DRAFT_ENTRY,
   LINK_ENTRY,
   type Prompt,
   type PromptFile,
@@ -56,7 +57,14 @@ const PI_COMMANDS: Record<string, string> = {
   "/compact": "compact",
 };
 // These commands use the open view as it is. The others reconnect after a lost connection.
-const VIEW_COMMANDS = new Set(["stop", "retry", "queue", "compact", "status"]);
+const VIEW_COMMANDS = new Set([
+  "stop",
+  "retry",
+  "queue",
+  "compact",
+  "status",
+  "exit",
+]);
 // Pi creates a new extension instance when it switches sessions.
 const composerDrafts = new Map<string, string>();
 let nextDraft: Partial<SessionDraft> | undefined;
@@ -108,6 +116,8 @@ export default function leverage(pi: ExtensionAPI): void {
   let own: number | undefined;
   let lifetime = new AbortController();
   let generation = 0;
+  // Pi stays itself until /leverage opens a view in it.
+  let active = false;
   let stream = "disconnected";
   let failure = "Choose or create a session with /leverage.";
   // The open Leverage session.
@@ -568,6 +578,22 @@ export default function leverage(pi: ExtensionAPI): void {
     status(ctx);
   };
 
+  // A new Pi view for a draft. The marker keeps it a Leverage view after a reload.
+  const openDraft = async (
+    ctx: ExtensionCommandContext,
+    overrides: Partial<SessionDraft>,
+  ) => {
+    nextDraft = overrides;
+    const result = await ctx.newSession({
+      setup: async (manager) => {
+        manager.appendCustomEntry(DRAFT_ENTRY, {});
+      },
+    });
+    if (result.cancelled) {
+      nextDraft = undefined;
+    }
+  };
+
   const commands: Record<string, Command> = {
     stop,
     retry: async (ctx) => {
@@ -600,12 +626,14 @@ export default function leverage(pi: ExtensionAPI): void {
         "info",
       );
     },
-    new: async (ctx, words) => {
-      nextDraft = words.length ? { title: words.join(" ") } : {};
-      const result = await ctx.newSession();
-      if (result.cancelled) {
-        nextDraft = undefined;
+    new: (ctx, words) =>
+      openDraft(ctx, words.length ? { title: words.join(" ") } : {}),
+    // Leaves Leverage for a plain Pi view.
+    exit: async (ctx) => {
+      if (!active) {
+        throw new Error("This Pi view is not a Leverage session.");
       }
+      await ctx.newSession();
     },
     settings: (ctx, words) =>
       editSettings(
@@ -671,7 +699,7 @@ export default function leverage(pi: ExtensionAPI): void {
         words.join(" "),
       );
       if (picked === "new") {
-        await ctx.newSession();
+        await openDraft(ctx, {});
         return;
       }
       if (!picked) {
@@ -703,6 +731,9 @@ export default function leverage(pi: ExtensionAPI): void {
       ),
   );
   pi.on("input", async (event, ctx) => {
+    if (!active) {
+      return { action: "continue" };
+    }
     try {
       await submit(event, ctx);
     } catch (error) {
@@ -727,6 +758,20 @@ export default function leverage(pi: ExtensionAPI): void {
     lifetime = new AbortController();
     const opening = generation;
     composerKey = undefined;
+    const branch = ctx.sessionManager.getBranch();
+    const link = sessionLink(branch);
+    // Only --leverage-session opens a session when Pi starts.
+    const requested = event.reason === "startup" && !!flag("session");
+    active =
+      !!link ||
+      requested ||
+      nextDraft !== undefined ||
+      branch.some(
+        (entry) => entry.type === "custom" && entry.customType === DRAFT_ENTRY,
+      );
+    if (!active) {
+      return;
+    }
     pi.setActiveTools([]);
     installEditor(ctx, opening);
     // Pi's footer layout, with the Leverage folder and model in place of local ones.
@@ -748,7 +793,6 @@ export default function leverage(pi: ExtensionAPI): void {
         ),
     }));
     try {
-      const link = sessionLink(ctx.sessionManager.getBranch());
       const resolved = settings(link);
       composerKey = `${resolved.host}/${resolved.workspace}/${link?.sessionId ?? (event.reason !== "new" ? resolved.sessionId : undefined) ?? ctx.sessionManager.getSessionId()}`;
       ctx.ui.setEditorText(composerDrafts.get(composerKey) ?? "");
@@ -762,7 +806,7 @@ export default function leverage(pi: ExtensionAPI): void {
       }
       own = api.connect(resolved);
       workspace.open();
-      if (link || (api.connection.sessionId && event.reason !== "new")) {
+      if (link || requested) {
         const session = await workspace.session(
           sessionId(link?.sessionId ?? api.connection.sessionId!),
           lifetime.signal,
@@ -800,6 +844,9 @@ export default function leverage(pi: ExtensionAPI): void {
   });
   pi.on("session_shutdown", disconnect);
   pi.on("session_before_compact", async (_event, ctx) => {
+    if (!active) {
+      return;
+    }
     try {
       await requireSession(true).compact();
     } catch (error) {
@@ -808,6 +855,9 @@ export default function leverage(pi: ExtensionAPI): void {
     return { cancel: true };
   });
   pi.on("session_before_fork", (_event, ctx) => {
+    if (!active) {
+      return;
+    }
     ctx.ui.notify(
       "Leverage does not support session forks. Use /leverage new.",
       "info",
@@ -816,18 +866,23 @@ export default function leverage(pi: ExtensionAPI): void {
   });
   // Leverage has no remote shell for Pi yet. Refusing here keeps `!` commands
   // from running on this machine by mistake.
-  pi.on("user_bash", () => ({
-    operations: {
-      async exec() {
-        throw new Error(
-          "Leverage cannot run shell commands from Pi yet. Ask the agent to run it instead.",
-        );
+  pi.on("user_bash", () => {
+    if (!active) {
+      return;
+    }
+    return {
+      operations: {
+        async exec() {
+          throw new Error(
+            "Leverage cannot run shell commands from Pi yet. Ask the agent to run it instead.",
+          );
+        },
       },
-    },
-  }));
+    };
+  });
   pi.registerCommand("leverage", {
     description:
-      "New, sessions, settings, approvals, history, stop, queue, model",
+      "Open Leverage: new, sessions, settings, approvals, history, stop, queue, model, exit",
     handler: async (args, ctx) => {
       const opening = generation;
       dialogCount++;
@@ -844,7 +899,7 @@ export default function leverage(pi: ExtensionAPI): void {
           : undefined;
         if (!command) {
           throw new Error(
-            "Use /leverage sessions, new, open, history, stop, queue, approvals, questions, inbox, model, compact, rename, archive, or restore.",
+            "Use /leverage sessions, new, open, history, stop, queue, approvals, questions, inbox, model, compact, rename, archive, restore, or exit.",
           );
         }
         await command(ctx, words, opening);
@@ -861,6 +916,9 @@ export default function leverage(pi: ExtensionAPI): void {
     pi.registerShortcut(key, {
       description: `Leverage ${action}`,
       handler: async () => {
+        if (!active) {
+          return;
+        }
         if (!busy()) {
           runCommand(action);
         }

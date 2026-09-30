@@ -5,8 +5,8 @@ Source "docs/demo/setup.tape"
 Type "pi"
 Sleep 300ms
 Enter
-Wait+Screen@30s /Default model/
-Sleep 1500ms
+Wait+Screen@30s /─/
+Sleep 2500ms
 Type "/leverage sessions"
 Sleep 400ms
 Enter

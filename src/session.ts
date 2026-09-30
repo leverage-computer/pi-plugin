@@ -50,6 +50,8 @@ export interface ViewHooks {
 }
 
 export const LINK_ENTRY = "leverage-session";
+// Marks a Pi view that /leverage new opened, before its first prompt creates a session.
+export const DRAFT_ENTRY = "leverage-draft";
 
 // The custom Pi entry that ties a local view to one Leverage session.
 export const sessionLinkSchema = z.object({

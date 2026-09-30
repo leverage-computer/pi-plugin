@@ -104,7 +104,18 @@ async function terminal(columns: number) {
     child.stdin.write(text);
     await Bun.sleep(80);
   };
-  await wait("Standalone · Default model", 30000);
+  // Pi starts as itself. /leverage new opens a Leverage draft in it.
+  // Pi refuses commands until its startup finishes and keeps the text.
+  await wait("─", 30000);
+  await key("/leverage new");
+  const deadline = Date.now() + 30000;
+  while (!output.includes("Standalone · Default model")) {
+    if (Date.now() > deadline) {
+      throw new Error(`Pi did not open a draft: ${output.slice(-4000)}`);
+    }
+    await key("\r");
+    await Bun.sleep(400);
+  }
   return { f, wait, key, output: () => output };
 }
 
