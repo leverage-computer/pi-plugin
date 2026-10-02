@@ -1,0 +1,65 @@
+{
+  "name": "@leverage/pi",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Use Pi as a frontend for shared Leverage agent sessions",
+  "keywords": [
+    "pi-package"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "bun test tests",
+    "test:unit": "bun run test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint:typed": "eslint src tests --max-warnings=0",
+    "format": "biome check --write .",
+    "format:check": "biome check .",
+    "build": "bun build src/index.ts --target=node --packages=external --outdir=dist",
+    "check": "bun run format:check && bun run lint:typed && bun run typecheck && bun run test && bun run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.16",
+    "@earendil-works/pi-coding-agent": "0.99.1",
+    "@earendil-works/pi-tui": "0.99.1",
+    "@types/bun": "1.4.0",
+    "@types/ws": "^8.18.1",
+    "eslint": "9.39.4",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.60.0"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.112",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leverage-computer/pi-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/leverage-computer/pi-plugin/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "bun@1.4.2"
+}
