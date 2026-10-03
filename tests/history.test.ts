@@ -785,4 +785,39 @@ describe("Shared session history", () => {
     expect(stripVTControlCharacters(rendered)).toContain("Hello red");
     expect(stripVTControlCharacters(rendered)).toContain("Eve");
   });
+
+  test("repaints a card in the new theme after Pi invalidates it", () => {
+    const active = () =>
+      (globalThis as Record<symbol, Theme>)[
+        Symbol.for("@earendil-works/pi-coding-agent:theme")
+      ]!;
+    // Pi hands renderers a live view of its active theme, as this proxy does.
+    const live = new Proxy({} as Theme, {
+      get: (_target, key) => Reflect.get(active(), key),
+    });
+    const entry: HistoryEntry = {
+      sessionId: SESSION,
+      id: "message",
+      role: "user",
+      author: "Alice",
+      parts: [{ type: "text", text: "Hello" }],
+      content: "Hello",
+      created: 0,
+      revision: 1,
+    };
+    const card = createHistoryComponent(() => entry, false, live);
+    try {
+      const dark = active().getFgAnsi("userMessageText");
+      expect(card.render(100).join("\n")).toContain(dark);
+      initTheme("light", false);
+      const light = active().getFgAnsi("userMessageText");
+      expect(light).not.toBe(dark);
+      card.invalidate();
+      const rendered = card.render(100).join("\n");
+      expect(rendered).toContain(light);
+      expect(rendered).not.toContain(dark);
+    } finally {
+      initTheme("dark", false);
+    }
+  });
 });

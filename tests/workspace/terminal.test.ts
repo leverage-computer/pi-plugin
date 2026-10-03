@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -35,11 +35,28 @@ finally:
     os.close(master)
     os.waitpid(pid, 0)
 `;
-async function terminal(columns: number) {
+// Pi reloads a custom theme when its file changes, so rewriting it switches themes.
+async function writeTheme(directory: string, base: "light" | "dark") {
+  const builtIn = resolve(
+    "node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme",
+    `${base}.json`,
+  );
+  const colors = JSON.parse(await readFile(builtIn, "utf8"));
+  await mkdir(join(directory, "themes"), { recursive: true });
+  await writeFile(
+    join(directory, "themes", "probe.json"),
+    JSON.stringify({ ...colors, name: "probe" }),
+  );
+}
+
+async function terminal(columns: number, theme?: "light" | "dark") {
   const f = workspaceFixture();
   disposals.push(() => f.close());
   const directory = await mkdtemp(join(tmpdir(), "pi-workspace-terminal-"));
   disposals.push(() => rm(directory, { recursive: true, force: true }));
+  if (theme) {
+    await writeTheme(directory, theme);
+  }
   const child = spawn(
     "python3",
     [
@@ -51,6 +68,7 @@ async function terminal(columns: number) {
       "--no-session",
       "--no-skills",
       "--no-prompt-templates",
+      ...(theme ? ["--use-theme", "probe"] : []),
       "-e",
       resolve("src/index.ts"),
     ],
@@ -71,7 +89,10 @@ async function terminal(columns: number) {
     },
   );
   let output = "";
+  // Everything Pi wrote, colors included.
+  let raw = "";
   child.stdout.on("data", (data) => {
+    raw += String(data);
     output += stripVTControlCharacters(String(data));
   });
   child.stderr.on("data", (data) => {
@@ -116,8 +137,33 @@ async function terminal(columns: number) {
     await key("\r");
     await Bun.sleep(400);
   }
-  return { f, wait, key, output: () => output, directory };
+  return { f, wait, key, output: () => output, raw: () => raw, directory };
 }
+
+test("the lines above the composer take the new colors when the theme changes", async () => {
+  const ui = await terminal(120, "light");
+  // The color Pi last set before the draft's model, in output written after `from`.
+  const color = (from: number) => {
+    const at = ui.raw().lastIndexOf("Default model");
+    return at < from
+      ? undefined
+      : ui
+          .raw()
+          .slice(from, at)
+          .match(/\u001b\[[0-9;]*m/g)
+          ?.at(-1);
+  };
+  const light = color(0);
+  expect(light).toBeDefined();
+  const from = ui.raw().length;
+  await writeTheme(ui.directory, "dark");
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline && [undefined, light].includes(color(from))) {
+    await Bun.sleep(50);
+  }
+  expect(color(from)).toBeDefined();
+  expect(color(from)).not.toBe(light);
+}, 45000);
 
 test("narrow Pi terminal sets the channel with F1 and the model with F2, keeping the draft and creating nothing", async () => {
   const ui = await terminal(64);
