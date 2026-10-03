@@ -471,8 +471,9 @@ export function createHistoryComponent(
     return card;
   };
   return {
+    // A theme change invalidates every component. Rebuilding the cards repaints their colors.
     invalidate() {
-      rendered?.invalidate();
+      rendered = undefined;
     },
     render(width) {
       const entry = read();

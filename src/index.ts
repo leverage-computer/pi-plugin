@@ -257,20 +257,17 @@ export default function leverage(pi: ExtensionAPI): void {
         >[0],
       );
     }
+    const shown = view;
+    const draftStatus = {
+      settings: draft,
+      place: draftContext,
+      error: draftError,
+      unconfirmed: !!pendingCreation,
+    };
     // Other modes forward widget text, so only the terminal gets colors.
     const theme = ctx.mode === "tui" ? ctx.ui.theme : undefined;
-    const lines = statusLines(
-      view,
-      {
-        settings: draft,
-        place: draftContext,
-        error: draftError,
-        unconfirmed: !!pendingCreation,
-      },
-      theme,
-    );
     if (!theme) {
-      ctx.ui.setWidget("leverage-session", lines);
+      ctx.ui.setWidget("leverage-session", statusLines(shown, draftStatus));
       return;
     }
     // Pi indents text widgets by a column, so these lines sit flush with the composer.
@@ -286,12 +283,19 @@ export default function leverage(pi: ExtensionAPI): void {
         working.setMessage(spinner);
       }
       const indicator = composer ? undefined : working;
+      // A theme change invalidates the widget. The lines then take the new colors.
+      let lines: string[] | undefined;
       return {
-        invalidate() {},
-        render: (width: number) => [
-          ...(indicator ? indicator.render(width) : []),
-          ...lines.flatMap((line) => wrapTextWithAnsi(line, width)),
-        ],
+        invalidate() {
+          lines = undefined;
+        },
+        render: (width: number) => {
+          lines ??= statusLines(shown, draftStatus, theme);
+          return [
+            ...(indicator ? indicator.render(width) : []),
+            ...lines.flatMap((line) => wrapTextWithAnsi(line, width)),
+          ];
+        },
       };
     });
   };
