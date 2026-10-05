@@ -360,6 +360,7 @@ export default function leverage(pi: ExtensionAPI): void {
     composerKey = `${api.connection.host}/${api.connection.workspace}/${session.id}`;
     view = new SessionView(pi, ctx, session, owner.signal, {
       changed: () => status(ctx),
+      idle: () => !busy() && !creating,
       opened: () => redrawConversation(),
       revoked: () => owner.abort(),
     });

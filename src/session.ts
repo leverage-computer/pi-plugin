@@ -43,6 +43,8 @@ export type Prompt = {
 export interface ViewHooks {
   // The status lines and footer need a redraw.
   changed(): void;
+  // Nothing else is open, so a request may open its own dialog.
+  idle(): boolean;
   // The first read is complete, so Pi shows the conversation from the top.
   opened(): void;
   // The server removed access, so the connection must start again.
@@ -318,6 +320,8 @@ export class SessionView {
   private byKey = new Map<string, View["entries"][number]>();
   private results = new Map<string, View["entries"][number]>();
   private readonly shown = new Map<string, Shown>();
+  // Requests whose dialog opened on its own. Escape leaves them pending and quiet.
+  private readonly prompted = new Set<string>();
   private rendered?: View["entries"];
   private readonly unsubscribe: () => void;
   private closed = false;
@@ -587,7 +591,42 @@ export class SessionView {
     }
     this.interactions?.sync();
     this.complete();
+    this.prompt(view);
     this.hooks.changed();
+  }
+
+  // A new approval or question opens its dialog, as Pi's own permission
+  // prompts do. Each request asks once; the status line keeps it in view.
+  private prompt(view: View): void {
+    const { interactions } = this;
+    if (!this.ready || !this.writable || !interactions || !this.ctx.hasUI) {
+      return;
+    }
+    if (interactions.hasDialog || !this.hooks.idle()) {
+      return;
+    }
+    const approvals = view.docs["leverage.approvals"].items.filter(
+      (one) => !this.prompted.has(one.id),
+    );
+    const questions = view.docs["leverage.asks"].items.filter(
+      (one) => !this.prompted.has(`ask:${one.data.toolUseId}`),
+    );
+    if (!approvals.length && !questions.length) {
+      return;
+    }
+    for (const one of approvals) {
+      this.prompted.add(one.id);
+    }
+    for (const one of questions) {
+      this.prompted.add(`ask:${one.data.toolUseId}`);
+    }
+    void interactions
+      .show(approvals.length ? "approvals" : "questions")
+      .catch((error: unknown) => {
+        if (!this.signal.aborted) {
+          report(this.ctx, error);
+        }
+      });
   }
 
   // Access is gone. The view stops taking input and the cards leave with it.

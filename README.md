@@ -57,12 +57,13 @@ for it:
 
 ![Approving a command](docs/media/03-approvals.gif)
 
-- Sometimes the agent asks before it runs something.
-- A yellow line tells you something is waiting.
-- Press **F4**, then pick **Approve once** or **Deny**. You only see the
-  choices you're allowed to make.
+- Sometimes the agent asks before it runs something. The question opens on
+  its own, and a yellow line stays until someone answers.
+- Pick **Approve once** or **Deny**. You only see the choices you're allowed
+  to make. Press **F4** to open it again later.
 - A plan to review works the same way: approve it, or ask for changes.
-- Not sure? Press **Escape**. Nothing gets approved.
+- Not sure? Press **Escape**. Nothing gets approved, and it won't ask again
+  until you press **F4**.
 
 [Watch it in full](docs/media/03-approvals.mp4)
 
