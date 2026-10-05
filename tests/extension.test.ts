@@ -17,11 +17,11 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { HISTORY_ENTRY } from "../src/history";
-import { sessionLink } from "../src/session";
+import { HISTORY_ENTRY, sessionLink } from "../src/session";
 import {
   eventually,
   exampleSession,
+  invocation,
   SESSION,
   workspaceFixture,
 } from "./workspace/fixture";
@@ -704,6 +704,63 @@ describe("Pi hosted frontend", () => {
     await runner.emit({ type: "session_shutdown", reason: "quit" });
     await eventually(() => f.connections.size === 0);
     expect(f.sent("session.stop")).toHaveLength(1);
+  });
+
+  test("a pending approval opens its dialog on its own, once, and Escape leaves it pending", async () => {
+    const f = leverage();
+    const runner = await load();
+    f.configure(runner, SESSION);
+    commandActions(runner);
+    const dialogs: string[] = [];
+    // The first dialog approves; the next one is dismissed with Escape.
+    runner.setUIContext({
+      ...runner.getUIContext(),
+      notify: () => {},
+      select: async (title) => {
+        dialogs.push(title);
+        return dialogs.length === 1 ? "Approve once" : undefined;
+      },
+    });
+    await runner.emit({ type: "session_start", reason: "startup" });
+    const first = invocation({ toolUseId: "toolu_deploy" });
+    f.approvals.push(first);
+    f.publish({
+      type: "session.approval.pending",
+      sessionId: SESSION,
+      invocation: first,
+    });
+    await eventually(() =>
+      f.requests.some((one) => one.path.endsWith(`/${first.id}/decide`)),
+    );
+    expect(dialogs).toHaveLength(1);
+    expect(dialogs[0]).toContain("Allow Run a command?");
+    expect(
+      f.requests.find((one) => one.path.endsWith(`/${first.id}/decide`))?.body,
+    ).toMatchObject({ action: "approve", approvalScope: "once" });
+    f.approvals.splice(0);
+    f.publish({
+      type: "session.approval.updated",
+      sessionId: SESSION,
+      invocation: { ...first, state: "approved" },
+    });
+    const second = invocation({ toolUseId: "toolu_rm" });
+    f.approvals.push(second);
+    f.publish({
+      type: "session.approval.pending",
+      sessionId: SESSION,
+      invocation: second,
+    });
+    await eventually(() => dialogs.length === 2);
+    // A later update to the session must not ask about the same request again.
+    f.update({ title: "Renamed meanwhile" });
+    await Bun.sleep(100);
+    expect(dialogs).toHaveLength(2);
+    expect(
+      f.requests.filter((one) => one.path.endsWith(`/${second.id}/decide`)),
+    ).toEqual([]);
+    // F4 asks again on purpose.
+    await command(runner, "approvals");
+    expect(dialogs).toHaveLength(3);
   });
 
   test("switching views restores each server transcript and closes the previous subscription", async () => {

@@ -53,7 +53,7 @@ export function statusLines(
     const questions = view.interactions?.questionCount ?? 0;
     return [
       ...warning(
-        !view.shared.canWrite,
+        !view.doc.canWrite,
         "Read-only · ask the owner for collaborator access",
       ),
       ...warning(

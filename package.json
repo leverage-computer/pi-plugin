@@ -32,12 +32,17 @@
     "check": "bun run format:check && bun run lint:typed && bun run typecheck && bun run test && bun run build"
   },
   "peerDependencies": {
+    "@earendil-works/chord": "*",
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
+    "@earendil-works/chord": "0.99.1",
+    "@earendil-works/pi-ai": "0.99.1",
     "@earendil-works/pi-coding-agent": "0.99.1",
+    "@earendil-works/pi-durable": "1.0.3",
     "@earendil-works/pi-tui": "0.99.1",
     "@types/bun": "1.4.0",
     "@types/ws": "^8.18.1",

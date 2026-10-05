@@ -38,7 +38,9 @@ for it:
   your next message. New sessions start with the model you used last.
 - Pasted an image with **Ctrl+V**? It goes to the agent with your message.
 - The agent's edits show as diffs, and its checklist, helpers and background
-  commands each get their own card.
+  commands each get their own card, drawn the way Pi draws its own.
+
+![The answer, with the agent's tool cards](docs/media/01-answer.png)
 
 [Watch it in full](docs/media/01-first-session.mp4)
 
@@ -57,12 +59,13 @@ for it:
 
 ![Approving a command](docs/media/03-approvals.gif)
 
-- Sometimes the agent asks before it runs something.
-- A yellow line tells you something is waiting.
-- Press **F4**, then pick **Approve once** or **Deny**. You only see the
-  choices you're allowed to make.
+- Sometimes the agent asks before it runs something. The question opens on
+  its own, and a yellow line stays until someone answers.
+- Pick **Approve once** or **Deny**. You only see the choices you're allowed
+  to make. Press **F4** to open it again later.
 - A plan to review works the same way: approve it, or ask for changes.
-- Not sure? Press **Escape**. Nothing gets approved.
+- Not sure? Press **Escape**. Nothing gets approved, and it won't ask again
+  until you press **F4**.
 
 [Watch it in full](docs/media/03-approvals.mp4)
 
