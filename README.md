@@ -38,7 +38,9 @@ for it:
   your next message. New sessions start with the model you used last.
 - Pasted an image with **Ctrl+V**? It goes to the agent with your message.
 - The agent's edits show as diffs, and its checklist, helpers and background
-  commands each get their own card.
+  commands each get their own card, drawn the way Pi draws its own.
+
+![The answer, with the agent's tool cards](docs/media/01-answer.png)
 
 [Watch it in full](docs/media/01-first-session.mp4)
 
