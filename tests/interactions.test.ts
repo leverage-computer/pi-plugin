@@ -5,7 +5,7 @@ import type {
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { type ModelChoice, PendingInteractions } from "../src/interactions";
-import { SharedSession } from "../src/workspace/state";
+import { SessionReplica } from "../src/workspace/view";
 import {
   eventually,
   hostedModel,
@@ -58,11 +58,8 @@ async function setup(
   } as ExtensionContext;
   const controller = new AbortController();
   let pending: PendingInteractions | undefined;
-  const shared = new SharedSession(SESSION, {
-    changed: () => pending?.sync(),
-    failed: () => {},
-    denied: () => {},
-  });
+  const shared = new SessionReplica(SESSION, () => {});
+  shared.state.subscribe(() => pending?.sync());
   disposals.push(async () => {
     controller.abort();
     shared.close();
@@ -73,7 +70,7 @@ async function setup(
     ctx,
     shared,
     controller.signal,
-    () => shared.canWrite && !shared.revoked,
+    () => shared.doc.canWrite && !shared.doc.revoked,
     options.chooseModel,
   );
   return {
@@ -180,14 +177,14 @@ describe("tool approvals", () => {
       ui: { select: dialog.select },
     });
     f.approvals.push(invocation());
-    expect(shared.canWrite).toBe(true);
+    expect(shared.doc.canWrite).toBe(true);
     const showing = pending.show("approvals");
     await dialog.ready;
     f.grants.splice(0);
     // The next read reports the lost role and closes the dialog.
     await shared.refresh();
     await showing;
-    expect(shared.canWrite).toBe(false);
+    expect(shared.doc.canWrite).toBe(false);
     expect(pending.hasDialog).toBe(false);
     expect(decisions()).toEqual([]);
   });

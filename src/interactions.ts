@@ -1,29 +1,24 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clean } from "./drawers";
-import { planOf, questionsOf } from "./history";
 import { workspace } from "./workspace/api";
-import type {
-  Invocation,
-  SessionInput,
-  TranscriptEvent,
-  WorkspaceMember,
-  WorkspaceSession,
-} from "./workspace/schema";
+import type { Invocation, TranscriptEvent } from "./workspace/schema";
+import {
+  planOf,
+  questionsOf,
+  type SessionDoc,
+  type SessionView,
+  userText,
+} from "./workspace/view";
 
 type Interaction = "approvals" | "questions" | "inbox" | "model";
 
 /** The model and effort a person picked for their next message. */
 export type ModelChoice = { model: string; reasoningEffort?: string };
 
-/** What the dialogs read: the shared session's pending work. */
+/** What the dialogs read: the session's view, read again on demand. */
 export interface InteractionSource {
   readonly id: string;
-  readonly session?: WorkspaceSession;
-  readonly userId?: string;
-  readonly members: readonly WorkspaceMember[];
-  pendingApprovals(): Invocation[];
-  pendingQuestions(): TranscriptEvent[];
-  queued(): SessionInput[];
+  readonly value: SessionView;
   refresh(): Promise<void>;
 }
 
@@ -33,14 +28,14 @@ export interface InteractionSource {
  */
 function approvalRights(
   invocation: Invocation,
-  source: InteractionSource,
+  doc: SessionDoc,
 ): { approve: boolean; always: boolean } {
   // Approval runs the call as someone. Without anyone, nobody can run it.
   if (invocation.actingUserId === null) {
     return { approve: false, always: false };
   }
-  const viewer = source.userId;
-  const role = source.members.find((one) => one.id === viewer)?.role;
+  const viewer = doc.userId;
+  const role = doc.members.find((one) => one.id === viewer)?.role;
   const staff = role === "owner" || role === "admin";
   const connector =
     invocation.workspaceConnectorId ||
@@ -48,7 +43,7 @@ function approvalRights(
     invocation.connectorScope;
   // A first-party tool: an "always" rule belongs to the session owner.
   if (!connector) {
-    return { approve: true, always: source.session?.ownerId === viewer };
+    return { approve: true, always: doc.session?.ownerId === viewer };
   }
   const owner =
     !!invocation.connectorOwnerUserId &&
@@ -151,12 +146,16 @@ export class PendingInteractions {
     return this.active !== undefined;
   }
 
+  private get docs() {
+    return this.source.value.docs;
+  }
+
   get approvalCount(): number {
-    return this.closed ? 0 : this.source.pendingApprovals().length;
+    return this.closed ? 0 : this.docs["leverage.approvals"].items.length;
   }
 
   get questionCount(): number {
-    return this.closed ? 0 : this.source.pendingQuestions().length;
+    return this.closed ? 0 : this.docs["leverage.asks"].items.length;
   }
 
   /**
@@ -174,8 +173,8 @@ export class PendingInteractions {
       return;
     }
     const open =
-      this.source.pendingApprovals().some((one) => one.id === id) ||
-      this.source.pendingQuestions().some((one) => one.data.toolUseId === id);
+      this.docs["leverage.approvals"].items.some((one) => one.id === id) ||
+      this.docs["leverage.asks"].items.some((one) => one.data.toolUseId === id);
     if (!open) {
       this.active?.controller.abort();
     }
@@ -227,7 +226,7 @@ export class PendingInteractions {
       }
       if (kind === "approvals") {
         const invocation = await this.pick(
-          this.source.pendingApprovals(),
+          this.docs["leverage.approvals"].items,
           "approvals",
           (one) => `${toolName(one)} · ${one.id}`,
           signal,
@@ -239,7 +238,7 @@ export class PendingInteractions {
         return;
       }
       const question = await this.pick(
-        this.source.pendingQuestions(),
+        this.docs["leverage.asks"].items,
         "questions",
         (one) =>
           planOf(one)
@@ -264,7 +263,7 @@ export class PendingInteractions {
 
   // Picks one waiting item. A single item opens directly.
   private async pick<T>(
-    items: T[],
+    items: readonly T[],
     kind: string,
     label: (item: T) => string,
     signal: AbortSignal,
@@ -305,7 +304,7 @@ export class PendingInteractions {
       });
       return;
     }
-    const rights = approvalRights(invocation, this.source);
+    const rights = approvalRights(invocation, this.docs["leverage.session"]);
     const picked = await this.ui.choose({
       title: rights.approve
         ? detail
@@ -532,7 +531,12 @@ export class PendingInteractions {
   private async inbox(signal: AbortSignal): Promise<void> {
     await this.source.refresh();
     while (!signal.aborted) {
-      const queued = this.source.queued();
+      // The inbox holds what waits for its turn, as Pi Durable queues it.
+      const queued = (this.docs["pi.inbox"]?.items ?? []).flatMap((item) =>
+        item.mode === "write"
+          ? []
+          : [{ uuid: String(item.id), content: userText(item.content) }],
+      );
       if (!queued.length) {
         this.ui.notify("No messages are waiting.", "info");
         return;
@@ -578,7 +582,8 @@ export class PendingInteractions {
 
   // Leverage changes a session's model with the next message, so the choice waits for it.
   private async model(signal: AbortSignal): Promise<void> {
-    const family = this.source.session?.providerFamily;
+    const { session } = this.docs["leverage.session"];
+    const family = session?.providerFamily;
     const models = (await workspace.models(signal)).filter(
       (model) => !model.legacy && (!family || model.family === family),
     );
@@ -589,7 +594,7 @@ export class PendingInteractions {
       this.ui.notify("No hosted models are available.", "warning");
       return;
     }
-    const current = this.source.session?.model;
+    const current = session?.model;
     const labels = models.map(
       (model) => `${model.label}${model.id === current ? " (current)" : ""}`,
     );
