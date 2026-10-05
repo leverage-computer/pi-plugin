@@ -3,26 +3,26 @@ import type {
   ExtensionContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { Container, matchesKey, Text } from "@earendil-works/pi-tui";
+import { Container, matchesKey, Text, type TUI } from "@earendil-works/pi-tui";
 import { z } from "zod";
 import { api, sameSessionId } from "./api";
 import { clean, drawerContext, report } from "./drawers";
-import {
-  createHistoryComponent,
-  HISTORY_ENTRY,
-  type HistoryEntry,
-  type HistoryMarker,
-  historyMarkerSchema,
-  SharedHistory,
-} from "./history";
 import { type ModelChoice, PendingInteractions } from "./interactions";
+import { createEntryComponent, entryText, type Shown } from "./render";
 import { workspace } from "./workspace/api";
 import type {
   SessionInput,
   WorkspaceMember,
   WorkspaceSession,
 } from "./workspace/schema";
-import { SharedSession } from "./workspace/state";
+import {
+  EntryFold,
+  entryData,
+  messageOf,
+  type SessionDoc,
+  SessionReplica,
+  type SessionView as View,
+} from "./workspace/view";
 
 /** A file pasted into the composer, as base64. */
 export type PromptFile = {
@@ -52,6 +52,7 @@ export interface ViewHooks {
 export const LINK_ENTRY = "leverage-session";
 // Marks a Pi view that /leverage new opened, before its first prompt creates a session.
 export const DRAFT_ENTRY = "leverage-draft";
+export const HISTORY_ENTRY = "leverage-history";
 
 // The custom Pi entry that ties a local view to one Leverage session.
 export const sessionLinkSchema = z.object({
@@ -63,12 +64,23 @@ export const sessionLinkSchema = z.object({
 
 export type SessionLink = z.infer<typeof sessionLinkSchema>;
 
+// Pi keeps one marker per displayed entry. The entry itself lives in the view.
+export const historyMarkerSchema = z.object({
+  sessionId: z.string(),
+  id: z.string(),
+});
+
+export type HistoryMarker = z.infer<typeof historyMarkerSchema>;
+
 // Images Pi can draw, and the most it reads for one.
 const IMAGE_TYPE = /^image\/(png|jpeg|gif|webp)$/;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 // A transcript position past any real one, so the first page is the newest.
 const NEWEST = 2 ** 31 - 1;
+
+/** A terminal for components drawn outside Pi's screen, such as a printed transcript. */
+export const NO_TERMINAL = { requestRender() {} } as unknown as TUI;
 
 /** The newest valid link in a Pi branch, if any. */
 export function sessionLink(
@@ -106,13 +118,37 @@ export async function placeOf(
   return channel?.name ? `${root}/${channel.name}` : root;
 }
 
+// Tool results show inside their call's card, so they get no marker of their own.
+function marked(entry: View["entries"][number]): boolean {
+  return entry.kind !== "pi.tool-result";
+}
+
+// The result entries of a view, by the call each one answers.
+function resultsOf(entries: View["entries"]) {
+  return new Map(
+    entries.flatMap((entry) => {
+      const message = messageOf(entry);
+      return message?.role === "toolResult"
+        ? [[message.toolCallId, entry] as const]
+        : [];
+    }),
+  );
+}
+
+function callOf(entry: View["entries"][number]) {
+  const message = messageOf(entry);
+  return message?.role === "assistant"
+    ? message.content.find((block) => block.type === "toolCall")
+    : undefined;
+}
+
 export async function viewRemoteHistory(
   ctx: ExtensionContext,
   session: WorkspaceSession,
   signal: AbortSignal,
   attribution?: {
     messages: SessionInput[];
-    members: WorkspaceMember[];
+    members: readonly WorkspaceMember[];
     viewerId?: string;
   },
 ): Promise<void> {
@@ -128,18 +164,33 @@ export async function viewRemoteHistory(
     if (signal.aborted) {
       return;
     }
-    const projection = new SharedHistory(session.id);
+    // One page of history is a view of its own, folded the same way.
+    const fold = new EntryFold(session.id);
+    const members = attribution?.members ?? [];
+    const viewerId = attribution?.viewerId;
     if (attribution) {
-      projection.attribute(attribution.members, attribution.viewerId);
-      projection.messages(
+      fold.messages(
         attribution.messages.filter((one) => one.status === "consumed"),
       );
     }
-    projection.apply(page.events);
+    fold.apply(page.events);
+    const entries = fold.current().filter(marked);
+    const results = resultsOf(fold.current());
+    const shown = (entry: View["entries"][number]): Shown => {
+      const call = callOf(entry);
+      const result = call ? results.get(call.id) : undefined;
+      return {
+        entry,
+        ...(result ? { result } : {}),
+        members,
+        ...(viewerId ? { viewerId } : {}),
+        images: new Map(),
+      };
+    };
     const content =
-      projection
-        .entries()
-        .map((entry) => entry.content)
+      entries
+        .map((entry) => entryText(entry, members, viewerId))
+        .filter(Boolean)
         .join("\n\n") || "This session has no messages yet.";
     if (ctx.mode !== "tui") {
       ctx.ui.notify(clean(content), "info");
@@ -153,10 +204,13 @@ export async function viewRemoteHistory(
         const abort = () => done("close");
         signal.addEventListener("abort", abort, { once: true });
         const text = new Container();
-        for (const entry of projection.entries()) {
-          text.addChild(createHistoryComponent(() => entry, true, theme));
+        for (const entry of entries) {
+          const one = shown(entry);
+          text.addChild(
+            createEntryComponent(() => one, true, theme, tui, process.cwd()),
+          );
         }
-        if (!projection.entries().length) {
+        if (!entries.length) {
           text.addChild(new Text(content, 0, 0));
         }
         return {
@@ -237,9 +291,13 @@ export async function viewRemoteHistory(
   }
 }
 
-/** One Leverage session that this Pi view shows. */
+/**
+ * One Leverage session that this Pi view shows. It attaches to the replica
+ * and renders each revision: a Pi marker per new entry, the live cards, and
+ * the lines around the composer.
+ */
 export class SessionView {
-  readonly shared: SharedSession;
+  readonly replica: SessionReplica;
   interactions?: PendingInteractions;
   ready = false;
   // Why the view cannot take input, after a lost connection or access.
@@ -252,8 +310,16 @@ export class SessionView {
   readonly signal: AbortSignal;
   private readonly controller = new AbortController();
   private readonly displayed = new Set<string>();
-  // Attached images already asked for, by address.
-  private readonly images = new Set<string>();
+  // Attached images read from Leverage, by address. A new map per image, so
+  // a card sees the change.
+  private images: ReadonlyMap<string, string> = new Map();
+  private readonly fetching = new Set<string>();
+  // The entries of the revision last rendered, by key and by the call they answer.
+  private byKey = new Map<string, View["entries"][number]>();
+  private results = new Map<string, View["entries"][number]>();
+  private readonly shown = new Map<string, Shown>();
+  private rendered?: View["entries"];
+  private readonly unsubscribe: () => void;
   private closed = false;
   private sending = false;
   private stopping = false;
@@ -266,38 +332,73 @@ export class SessionView {
     private readonly hooks: ViewHooks,
   ) {
     this.signal = AbortSignal.any([lifetime, this.controller.signal]);
-    this.shared = new SharedSession(session.id, {
-      changed: (entries) => this.update(entries),
-      failed: (error) => {
-        if (!this.signal.aborted) {
-          report(ctx, error);
-        }
-      },
-      denied: () => {
-        if (this.closed) {
-          return;
-        }
-        this.ready = false;
-        this.interactions?.close();
-        this.hooks.revoked();
-        this.lose(
-          "Session access was removed. Use /leverage sessions to open another session.",
-        );
-      },
+    this.replica = new SessionReplica(session.id, (error) => {
+      if (!this.signal.aborted) {
+        report(ctx, error);
+      }
     });
+    this.unsubscribe = this.replica.state.subscribe((value) =>
+      this.render(value),
+    );
   }
 
-  /** The conversation, until access to it is removed. */
-  get history(): SharedHistory | undefined {
-    return this.shared.revoked ? undefined : this.shared.history;
+  /** The view as this client last saw it. */
+  get view(): View {
+    return this.replica.value;
+  }
+
+  /** Leverage's session document: the row, access, members and skills. */
+  get doc(): SessionDoc {
+    return this.replica.doc;
+  }
+
+  /**
+   * One marked entry as Pi should draw it now, with its result and live
+   * output. The same object comes back while nothing about it changed, so a
+   * card can tell a redraw from a change.
+   */
+  show(id: string): Shown | undefined {
+    const entry = this.byKey.get(id);
+    if (!entry) {
+      return undefined;
+    }
+    const call = callOf(entry);
+    const doc = this.doc;
+    const result = call ? this.results.get(call.id) : undefined;
+    const slot = call
+      ? this.view.docs["pi.live"]?.tools?.find((one) => one.callId === call.id)
+      : undefined;
+    const last = this.shown.get(id);
+    if (
+      last &&
+      last.entry === entry &&
+      last.result === result &&
+      last.slot === slot &&
+      last.members === doc.members &&
+      last.viewerId === doc.userId &&
+      last.images === this.images
+    ) {
+      return last;
+    }
+    const next: Shown = {
+      entry,
+      ...(result ? { result } : {}),
+      ...(slot ? { slot } : {}),
+      members: doc.members,
+      ...(doc.userId ? { viewerId: doc.userId } : {}),
+      images: this.images,
+    };
+    this.shown.set(id, next);
+    return next;
   }
 
   get writable(): boolean {
-    return this.shared.canWrite && !this.shared.revoked;
+    const { canWrite, revoked } = this.doc;
+    return canWrite && !revoked;
   }
 
   get running(): boolean {
-    return this.shared.running;
+    return this.view.docs["pi.live"]?.run !== undefined;
   }
 
   /** The connection state the footer shows. */
@@ -305,7 +406,7 @@ export class SessionView {
     if (this.problem) {
       return "disconnected";
     }
-    return this.shared.connection;
+    return this.doc.connection;
   }
 
   get model(): string {
@@ -346,7 +447,7 @@ export class SessionView {
     }
     this.interactions = new PendingInteractions(
       ctx.mode === "tui" ? drawerContext(ctx) : ctx,
-      this.shared,
+      this.replica,
       signal,
       () => this.writable,
       (choice) => {
@@ -359,13 +460,13 @@ export class SessionView {
     }
     this.pi.setSessionName(session.title || "Leverage session");
     this.hooks.changed();
-    await this.shared.start(signal);
+    await this.replica.start(signal);
     this.complete();
   }
 
   /** Reads the session again. */
   sync(): Promise<void> {
-    return this.shared.refresh();
+    return this.replica.refresh();
   }
 
   async send(prompt: Prompt): Promise<void> {
@@ -410,7 +511,7 @@ export class SessionView {
       if (this.nextModel === next) {
         this.nextModel = undefined;
       }
-      this.shared.remember(input);
+      this.replica.remember(input);
     } catch (error) {
       if (!this.closed) {
         this.failedPrompt = prompt;
@@ -451,26 +552,59 @@ export class SessionView {
   close(): void {
     this.closed = true;
     this.controller.abort();
+    this.unsubscribe();
     this.interactions?.close();
-    this.shared.close();
+    this.replica.close();
   }
 
-  private update(entries: HistoryEntry[]): void {
+  /**
+   * Shows one revision of the view. Every Pi-side effect comes from the
+   * value alone, so a revision rendered twice changes nothing the second time.
+   */
+  private render(view: View): void {
     if (this.signal.aborted) {
       return;
     }
-    const session = this.shared.session;
-    if (session) {
-      if (session.title && session.title !== this.session.title) {
-        this.pi.setSessionName(session.title);
-      }
-      this.session = session;
+    const doc = view.docs["leverage.session"];
+    if (doc.revoked) {
+      this.revoked();
+      return;
     }
-    this.display(entries);
-    this.fetchImages(entries);
+    if (doc.session) {
+      if (doc.session.title && doc.session.title !== this.session.title) {
+        this.pi.setSessionName(doc.session.title);
+      }
+      this.session = doc.session;
+    }
+    if (view.entries !== this.rendered) {
+      this.rendered = view.entries;
+      this.byKey = new Map(
+        view.entries.map((entry) => [entryData(entry).key, entry]),
+      );
+      this.results = resultsOf(view.entries);
+      this.display(view.entries);
+      this.fetchImages(view.entries);
+    }
     this.interactions?.sync();
     this.complete();
     this.hooks.changed();
+  }
+
+  // Access is gone. The view stops taking input and the cards leave with it.
+  private revoked(): void {
+    if (this.closed || this.problem) {
+      return;
+    }
+    this.ready = false;
+    this.byKey = new Map();
+    this.results = new Map();
+    this.shown.clear();
+    this.rendered = undefined;
+    this.interactions?.close();
+    this.hooks.revoked();
+    this.lose(
+      "Session access was removed. Use /leverage sessions to open another session.",
+    );
   }
 
   // The first successful read opens the view, even one after a failed start.
@@ -478,7 +612,7 @@ export class SessionView {
     if (this.ready || this.closed || this.problem) {
       return;
     }
-    if (!this.interactions || !this.shared.session) {
+    if (!this.interactions || !this.doc.session) {
       return;
     }
     this.ready = true;
@@ -492,30 +626,29 @@ export class SessionView {
   }
 
   // An attached image comes from Leverage once, then shows in its card.
-  private fetchImages(entries: HistoryEntry[]): void {
+  private fetchImages(entries: View["entries"]): void {
     for (const entry of entries) {
-      for (const part of entry.parts) {
-        if (part.type !== "file" || part.data || !part.uri) {
+      for (const file of entryData(entry).attachments ?? []) {
+        const uri = file.url;
+        if (!uri || !IMAGE_TYPE.test(file.contentType)) {
           continue;
         }
-        if (!IMAGE_TYPE.test(part.mime) || !part.uri.startsWith("/api/")) {
+        if (!uri.startsWith("/api/") || this.fetching.has(uri)) {
           continue;
         }
-        if (this.images.has(part.uri)) {
-          continue;
-        }
-        const uri = part.uri;
-        this.images.add(uri);
+        this.fetching.add(uri);
         void api
           .bytes(`${uri}?display=1`, this.signal, MAX_IMAGE_BYTES)
-          .then(({ data }) =>
-            this.update(
-              this.shared.history.fill(
-                uri,
-                Buffer.from(data).toString("base64"),
-              ),
-            ),
-          )
+          .then(({ data }) => {
+            if (this.signal.aborted) {
+              return;
+            }
+            this.images = new Map(this.images).set(
+              uri,
+              Buffer.from(data).toString("base64"),
+            );
+            this.hooks.changed();
+          })
           .catch(() => {
             // The card keeps its file name when the image cannot be read.
           });
@@ -523,17 +656,20 @@ export class SessionView {
     }
   }
 
-  // Adds a Pi entry for each new card. The entry renders the live card.
-  private display(changes: HistoryEntry[]): void {
-    const ordered = [...changes].sort((a, b) => a.created - b.created);
-    for (const entry of ordered) {
-      if (this.displayed.has(entry.id)) {
+  // Adds a Pi entry for each entry not shown yet. The Pi entry renders the live card.
+  private display(entries: View["entries"]): void {
+    for (const entry of entries) {
+      if (!marked(entry)) {
         continue;
       }
-      this.displayed.add(entry.id);
+      const { key } = entryData(entry);
+      if (this.displayed.has(key)) {
+        continue;
+      }
+      this.displayed.add(key);
       this.pi.appendEntry<HistoryMarker>(HISTORY_ENTRY, {
-        sessionId: entry.sessionId,
-        id: entry.id,
+        sessionId: this.session.id,
+        id: key,
       });
     }
   }

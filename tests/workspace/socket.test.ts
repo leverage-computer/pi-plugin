@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import type { HistoryEntry } from "../../src/history";
-import { SharedSession } from "../../src/workspace/state";
+import { SessionReplica, type SessionView } from "../../src/workspace/view";
 import {
   eventually,
   input,
@@ -11,7 +10,7 @@ import {
 } from "./fixture";
 
 const fixtures: ReturnType<typeof workspaceFixture>[] = [];
-const sessions: SharedSession[] = [];
+const sessions: SessionReplica[] = [];
 afterEach(async () => {
   for (const session of sessions.splice(0)) {
     session.close();
@@ -27,23 +26,17 @@ function fixture() {
   return f;
 }
 
-// A shared session that records what it reports.
+// A shared session that records every state it publishes.
 async function open(user = "owner") {
   const f = fixture();
   f.client(user);
-  const changes: HistoryEntry[] = [];
+  const states: SessionView[] = [];
   const errors: unknown[] = [];
-  let denied = 0;
-  const shared = new SharedSession(SESSION, {
-    changed: (entries) => changes.push(...entries),
-    failed: (error) => errors.push(error),
-    denied: () => {
-      denied++;
-    },
-  });
+  const shared = new SessionReplica(SESSION, (error) => errors.push(error));
+  shared.state.subscribe((state) => states.push(state));
   sessions.push(shared);
   await shared.start(new AbortController().signal);
-  return { f, shared, changes, errors, denied: () => denied };
+  return { f, shared, states, errors };
 }
 
 const bob = input("From Bob", {
@@ -98,10 +91,10 @@ test("reconnects with its replay cursor and drops repeated frames", async () => 
 });
 
 test("live rows, streamed text and status changes reach the conversation", async () => {
-  const { f, shared } = await open();
-  expect(shared.running).toBe(false);
+  const { f, shared, states } = await open();
+  expect(shared.value.docs["pi.live"]?.run !== undefined).toBe(false);
   f.update({ status: "active", turnId: "turn_1" });
-  await eventually(() => shared.running);
+  await eventually(() => shared.value.docs["pi.live"]?.run !== undefined);
   f.emit("user", { content: "Hi" }, { authorId: "owner" });
   const row = f.emit("text", {
     role: "assistant",
@@ -121,14 +114,20 @@ test("live rows, streamed text and status changes reach the conversation", async
     },
   });
   await eventually(() =>
-    shared.history.entries().some((one) => one.content.endsWith("Hello there")),
+    shared.value.entries.some((one) =>
+      JSON.stringify(one.model).includes("Hello there"),
+    ),
   );
   f.update({ status: "idle", turnId: null });
-  await eventually(() => !shared.running);
-  expect(shared.history.entries().map((one) => one.role)).toEqual([
-    "user",
-    "assistant",
-  ]);
+  await eventually(() => shared.value.docs["pi.live"]?.run === undefined);
+  const { entries } = shared.value;
+  expect(entries.map((one) => one.kind)).toEqual(["pi.user", "pi.assistant"]);
+  // Revisions reach a subscriber in order, each a new value, and one without
+  // an entry change keeps its entries.
+  await eventually(() => states.at(-1) === shared.value);
+  expect(new Set(states).size).toBe(states.length);
+  expect(states.at(-1)?.entries).toBe(entries);
+  expect(states.at(-2)?.entries).toBe(entries);
 });
 
 test("tracks approvals and questions until someone resolves them", async () => {
@@ -140,58 +139,62 @@ test("tracks approvals and questions until someone resolves them", async () => {
     sessionId: SESSION,
     invocation: pending,
   });
-  await eventually(() => shared.pendingApprovals().length === 1);
+  await eventually(
+    () => shared.value.docs["leverage.approvals"].items.length === 1,
+  );
   f.approvals[0] = { ...pending, state: "approved" };
   f.publish({
     type: "session.approval.updated",
     sessionId: SESSION,
     invocation: f.approvals[0],
   });
-  await eventually(() => shared.pendingApprovals().length === 0);
+  await eventually(
+    () => shared.value.docs["leverage.approvals"].items.length === 0,
+  );
   f.emit("ask_user", {
     toolUseId: "toolu_q",
     input: { questions: [{ question: "Which branch?", options: [] }] },
   });
-  await eventually(() => shared.pendingQuestions().length === 1);
+  await eventually(() => shared.value.docs["leverage.asks"].items.length === 1);
   f.emit("tool_result", { toolUseId: "toolu_q", content: "main" });
-  await eventually(() => shared.pendingQuestions().length === 0);
+  await eventually(() => shared.value.docs["leverage.asks"].items.length === 0);
 });
 
 test("revocation clears the conversation; workspace viewers cannot write", async () => {
   const f = fixture();
   f.session.visibility = "workspace";
   f.client(MEMBER);
-  let denied = 0;
   const errors: unknown[] = [];
-  const shared = new SharedSession(SESSION, {
-    changed: () => {},
-    failed: (e) => errors.push(e),
-    denied: () => {
-      denied++;
-    },
+  const shared = new SessionReplica(SESSION, (e) => errors.push(e));
+  const revocations: SessionView[] = [];
+  shared.state.subscribe((state) => {
+    if (state.docs["leverage.session"].revoked) {
+      revocations.push(state);
+    }
   });
   sessions.push(shared);
   await shared.start(new AbortController().signal);
-  expect(shared.canWrite).toBe(false);
+  expect(shared.doc.canWrite).toBe(false);
   f.grants.push({
     principalType: "user",
     principalId: MEMBER,
     role: "collaborator",
   });
   f.publish({ type: "session.list.changed", sessionId: SESSION });
-  await eventually(() => shared.canWrite);
+  await eventually(() => shared.doc.canWrite);
   f.publish({
     type: "session.messages.updated",
     sessionId: SESSION,
     version: 2,
     messages: [bob],
   });
-  await eventually(() => shared.queued().length === 1);
+  await eventually(() => shared.value.docs["pi.inbox"]!.items.length === 1);
   f.publish({ type: "session.access_revoked", sessionId: SESSION });
-  await eventually(() => shared.revoked);
-  expect(shared.queued()).toEqual([]);
-  expect(shared.canWrite).toBe(false);
-  expect(denied).toBe(1);
+  await eventually(() => shared.doc.revoked);
+  expect(shared.value.docs["pi.inbox"]!.items).toEqual([]);
+  expect(shared.value.entries).toEqual([]);
+  expect(shared.doc.canWrite).toBe(false);
+  expect(revocations).toHaveLength(1);
   expect(errors).toEqual([]);
 });
 
@@ -208,7 +211,7 @@ test("a stale read cannot overwrite a newer message update", async () => {
     version: 5,
     messages: [bob],
   });
-  await eventually(() => shared.version === 5);
+  await eventually(() => shared.doc.version === 5);
   f.state.version = 1;
   f.state.nativeMessages = [{ ...bob, content: "Stale", status: "received" }];
   release();
@@ -240,8 +243,10 @@ test("a read that overlaps a live approval keeps it", async () => {
     sessionId: SESSION,
     invocation: invocation(),
   });
-  await eventually(() => shared.pendingApprovals().length === 1);
+  await eventually(
+    () => shared.value.docs["leverage.approvals"].items.length === 1,
+  );
   release();
   await refreshing;
-  expect(shared.pendingApprovals()).toHaveLength(1);
+  expect(shared.value.docs["leverage.approvals"].items).toHaveLength(1);
 });

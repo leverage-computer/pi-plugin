@@ -17,8 +17,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { HISTORY_ENTRY } from "../src/history";
-import { sessionLink } from "../src/session";
+import { HISTORY_ENTRY, sessionLink } from "../src/session";
 import {
   eventually,
   exampleSession,

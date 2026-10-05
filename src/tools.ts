@@ -12,6 +12,7 @@ export type ToolCard =
   | { kind: "todo"; items: TodoItem[] }
   | { kind: "plan"; plan: string }
   | { kind: "task"; subject: string; background: boolean }
+  | { kind: "question"; lines: string[] }
   | { kind: "activity"; title: string; subject: string; trimLines: boolean };
 
 export interface TodoItem {
@@ -22,8 +23,8 @@ export interface TodoItem {
 const text = z.string().catch("");
 const flag = z.boolean().catch(false);
 
-// Every input field any card reads. A field of the wrong type reads as empty.
-const inputSchema = z.looseObject({
+// Every argument any card reads. One of the wrong type reads as empty.
+const argumentsSchema = z.looseObject({
   command: text,
   cmd: text,
   script: text,
@@ -69,9 +70,17 @@ const inputSchema = z.looseObject({
     )
     .catch([]),
   search_query: z.array(z.looseObject({ q: text })).catch([]),
+  questions: z
+    .array(
+      z.object({
+        question: text,
+        options: z.array(z.object({ label: text })).catch([]),
+      }),
+    )
+    .catch([]),
 });
 
-type ToolInput = z.infer<typeof inputSchema>;
+type ToolArguments = z.infer<typeof argumentsSchema>;
 
 // MCP and namespaced tools keep only their last name, without separators.
 function bareName(name: string): string {
@@ -84,7 +93,7 @@ function firstLine(value: string): string {
 }
 
 // Codex patches carry whole files for adds and deletes, and a unified diff for updates.
-function patchDiff(input: ToolInput): string {
+function patchDiff(input: ToolArguments): string {
   return input.changes
     .flatMap((change) => {
       const lines = change.diff ? change.diff.split("\n") : [];
@@ -106,7 +115,7 @@ function patchDiff(input: ToolInput): string {
     .join("\n");
 }
 
-function editDiff(name: string, input: ToolInput): string {
+function editDiff(name: string, input: ToolArguments): string {
   switch (name) {
     case "write":
       return generateDiffString("", input.content).diff;
@@ -123,34 +132,9 @@ function editDiff(name: string, input: ToolInput): string {
   }
 }
 
-/** One line that names a tool call, as a sub-agent's step list shows it. */
-export function toolLabel(name: string, inputJson: string): string {
-  const card = toolCard(name, inputJson);
-  switch (card.kind) {
-    case "shell":
-      return `$ ${firstLine(card.command)}`;
-    case "diff":
-      return `${card.title} ${card.subject}`.trim();
-    case "todo":
-      return "Todos";
-    case "plan":
-      return "Plan";
-    case "task":
-      return `Task ${card.subject}`.trim();
-    case "activity":
-      return `${card.title} ${card.subject}`.trim();
-  }
-}
-
-/** The card for one tool call, from its name and JSON arguments. */
-export function toolCard(name: string, inputJson: string): ToolCard {
-  let raw: unknown = {};
-  try {
-    raw = JSON.parse(inputJson || "{}");
-  } catch {
-    raw = {};
-  }
-  const input = inputSchema.catch(inputSchema.parse({})).parse(raw);
+/** The card for one tool call, from its name and arguments. */
+export function toolCard(name: string, args: unknown): ToolCard {
+  const input = argumentsSchema.catch(argumentsSchema.parse({})).parse(args);
   const bare = bareName(name);
   switch (bare) {
     case "bash":
@@ -197,6 +181,19 @@ export function toolCard(name: string, inputJson: string): ToolCard {
       };
     case "exitplanmode":
       return { kind: "plan", plan: input.plan };
+    case "askuserquestion":
+      return {
+        kind: "question",
+        lines: input.questions
+          .filter((one) => one.question)
+          .flatMap((one) => [
+            one.question,
+            ...one.options
+              .map((option) => option.label)
+              .filter(Boolean)
+              .map((label, index) => `  ${index + 1}. ${label}`),
+          ]),
+      };
     case "task":
     case "agent":
     case "spawnagent":
@@ -270,5 +267,26 @@ export function toolCard(name: string, inputJson: string): ToolCard {
         ),
         trimLines: false,
       };
+  }
+}
+
+/** One line that names a tool call, as a sub-agent's step list shows it. */
+export function toolTitleText(name: string, args: unknown): string {
+  const card = toolCard(name, args);
+  switch (card.kind) {
+    case "shell":
+      return `$ ${firstLine(card.command)}`;
+    case "diff":
+      return `${card.title} ${card.subject}`.trim();
+    case "todo":
+      return "Todos";
+    case "plan":
+      return "Plan";
+    case "question":
+      return ["Question for you", ...card.lines].join("\n");
+    case "task":
+      return `Task ${card.subject}`.trim();
+    case "activity":
+      return `${card.title} ${card.subject}`.trim();
   }
 }

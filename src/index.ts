@@ -13,16 +13,14 @@ import { matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { api, sessionId } from "./api";
 import { rememberedModel, rememberModel, resolveConnection } from "./config";
 import { chooseDrawer, clean, report, textDrawer } from "./drawers";
-import {
-  createHistoryComponent,
-  HISTORY_ENTRY,
-  type HistoryEntry,
-  type HistoryMarker,
-  historyMarkerSchema,
-} from "./history";
+import { createEntryComponent } from "./render";
 import {
   DRAFT_ENTRY,
+  HISTORY_ENTRY,
+  type HistoryMarker,
+  historyMarkerSchema,
   LINK_ENTRY,
+  NO_TERMINAL,
   type Prompt,
   type PromptFile,
   type SessionLink,
@@ -191,6 +189,8 @@ export default function leverage(pi: ExtensionAPI): void {
   let editorInstalled = false;
   let priorEditor: ReturnType<ExtensionContext["ui"]["getEditorComponent"]>;
   let composer: { editor: CustomEditor; tui: TUI } | undefined;
+  // Pi's terminal, which the tool cards draw into.
+  let terminal: TUI | undefined;
   let working: BorderStatus | undefined;
   let redrawConversation = () => {};
   let dialogCount = 0;
@@ -550,6 +550,7 @@ export default function leverage(pi: ExtensionAPI): void {
     priorEditor = previousEditor;
     editorInstalled = true;
     ctx.ui.setEditorComponent((tui, theme, keys) => {
+      terminal = tui;
       redrawConversation = () => {
         // Reset the old viewport before a different conversation fills the terminal.
         tui.terminal.write("\u001b[2J\u001b[H\u001b[3J");
@@ -762,7 +763,7 @@ export default function leverage(pi: ExtensionAPI): void {
     // A skill runs as a message. Claude takes it as a command; Codex as words.
     skills: async (ctx) => {
       const current = requireSession(true);
-      const skills = current.shared.skills;
+      const { skills } = current.doc;
       if (!skills.length) {
         throw new Error("This session's folder has no skills.");
       }
@@ -790,8 +791,8 @@ export default function leverage(pi: ExtensionAPI): void {
       const snapshot = await workspace.bootstrap(session.id, signal);
       await viewRemoteHistory(ctx, session, signal, {
         messages: snapshot.messages,
-        members: current.shared.members,
-        viewerId: current.shared.userId,
+        members: current.doc.members,
+        viewerId: current.doc.userId,
       });
     },
     rename: async (ctx, words) => {
@@ -854,19 +855,20 @@ export default function leverage(pi: ExtensionAPI): void {
   pi.registerEntryRenderer<HistoryMarker>(
     HISTORY_ENTRY,
     (entry, options, theme) =>
-      createHistoryComponent(
+      createEntryComponent(
         () => {
-          const history = view?.history;
           const marker = historyMarkerSchema.safeParse(entry.data);
           if (!marker.success) {
             return undefined;
           }
-          return history?.sessionId === marker.data.sessionId
-            ? history.entry(marker.data.id)
+          return view?.session.id === marker.data.sessionId
+            ? view.show(marker.data.id)
             : undefined;
         },
         options.expanded,
         theme,
+        terminal ?? NO_TERMINAL,
+        process.cwd(),
       ),
   );
   pi.on("input", async (event, ctx) => {
