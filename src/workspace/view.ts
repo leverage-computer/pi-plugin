@@ -25,10 +25,13 @@ import {
   type Attachment,
   askSchema,
   type Invocation,
+  type PresenceEntry,
   type RowData,
   type SessionInput,
+  type SessionViewer,
   type TranscriptDelta,
   type TranscriptEvent,
+  type ViewerState,
   type WorkspaceEvent,
   type WorkspaceMember,
   type WorkspaceSession,
@@ -91,6 +94,19 @@ export interface SessionDoc {
   members: WorkspaceMember[];
   // The skills the session's folder offers, from its first row.
   skills: Skill[];
+  // Who has the session open, and whether they are watching it.
+  viewers: Viewer[];
+  // Who is typing a message to it right now, by user ID.
+  typing: string[];
+  // Who is online anywhere in the workspace, by user ID.
+  presence: Record<string, PresenceEntry>;
+}
+
+/** A person with the session open. */
+export interface Viewer {
+  userId: string;
+  userName: string;
+  state: ViewerState;
 }
 
 /** What an entry carries besides its message: where it sits and who wrote it. */
@@ -136,7 +152,19 @@ const SESSION_DOC: SessionDoc = {
   connection: "connecting",
   members: [],
   skills: [],
+  viewers: [],
+  typing: [],
+  presence: {},
 };
+
+// A viewer frame without a state means the person is watching.
+function viewer(value: SessionViewer): Viewer {
+  return {
+    userId: value.userId,
+    userName: value.userName,
+    state: value.state ?? "active",
+  };
+}
 
 function conversationId(value: number): ConversationId {
   return value as unknown as ConversationId;
@@ -1171,6 +1199,25 @@ export class SessionReplica {
           this.commit((draft) => this.pending(draft));
         },
       ),
+      // The socket keeps who is around. The document copies it on each change.
+      Match.when({ type: "session.presence.snapshot", sessionId: mine }, () =>
+        this.commit((draft) => this.people(draft)),
+      ),
+      Match.when({ type: "session.presence.update", sessionId: mine }, () =>
+        this.commit((draft) => this.people(draft)),
+      ),
+      Match.when({ type: "session.typing.snapshot", sessionId: mine }, () =>
+        this.commit((draft) => this.people(draft)),
+      ),
+      Match.when({ type: "session.typing.update", sessionId: mine }, () =>
+        this.commit((draft) => this.people(draft)),
+      ),
+      Match.when({ type: "presence.snapshot" }, () =>
+        this.commit((draft) => this.people(draft)),
+      ),
+      Match.when({ type: "presence.update" }, () =>
+        this.commit((draft) => this.people(draft)),
+      ),
       Match.when({ type: "session.access_revoked", sessionId: mine }, () =>
         this.revoke(),
       ),
@@ -1233,6 +1280,7 @@ export class SessionReplica {
       if (this.socket?.userId) {
         doc.userId = this.socket.userId;
       }
+      this.people(draft);
       if (current) {
         doc.version = snapshot.version;
         this.session(draft, snapshot.session);
@@ -1317,6 +1365,16 @@ export class SessionReplica {
     this.pending(draft);
   }
 
+  // Who has the session open, who is typing, and who is online, from the socket.
+  private people(draft: Draft<SessionView>): void {
+    const doc = draft.docs["leverage.session"];
+    doc.viewers = [...(this.socket?.viewers.get(this.id)?.values() ?? [])].map(
+      (one) => viewer(one),
+    );
+    doc.typing = [...(this.socket?.typing.get(this.id) ?? [])];
+    doc.presence = json(Object.fromEntries(this.socket?.presence ?? []));
+  }
+
   // What waits for a person: approvals and questions.
   private pending(draft: Draft<SessionView>): void {
     draft.docs["leverage.approvals"] = {
@@ -1338,6 +1396,8 @@ export class SessionReplica {
       const doc = draft.docs["leverage.session"];
       doc.revoked = true;
       doc.canWrite = false;
+      doc.viewers = [];
+      doc.typing = [];
     });
     this.close();
   }

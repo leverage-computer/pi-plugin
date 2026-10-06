@@ -49,9 +49,19 @@ for it:
 ![Finding and opening a session](docs/media/02-sessions.gif)
 
 - Type `/leverage` to see all sessions. Already in one? Press **F3**.
-- Type a few letters to find one, then press **Enter**.
+- Type a few letters to find one, then press **Enter**. Each session says
+  whether its owner is online.
 - You'll see who wrote each message.
-- Anything you send shows up for everyone.
+- Above the composer, you'll always see who else has the session open,
+  who is typing, and whether the owner is around. Press **F1** for the full
+  list.
+- Anything you send shows up for everyone. You count as online while you
+  type or send; a Pi left open goes away after a few quiet minutes, like
+  the other Leverage apps.
+
+![Who is on the session](docs/media/05-people.gif)
+
+[Watch it in full](docs/media/05-people.mp4)
 
 [Watch it in full](docs/media/02-sessions.mp4)
 
@@ -95,6 +105,9 @@ These keys work once you're in a Leverage session.
 | **F2** | Pick a model |
 | **F3** | Find and open a session |
 | **F4** | Review what the agent wants to run |
+| **Enter** while the agent works | Steer it: it reads your message after its current step |
+| **Alt+Enter** | Queue a follow-up for when the agent finishes |
+| **Alt+Q** | Take queued follow-ups back into the editor |
 | **Escape** | Stop the agent |
 | `/leverage rename <name>` | Rename the session |
 | `/leverage history` | Read older messages |

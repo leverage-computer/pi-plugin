@@ -29,7 +29,13 @@ import {
   sessionLink,
   viewRemoteHistory,
 } from "./session";
-import { BorderStatus, footerLines, statusLines } from "./status";
+import {
+  BorderStatus,
+  footerLines,
+  personText,
+  roster,
+  statusLines,
+} from "./status";
 import { workspace } from "./workspace/api";
 import {
   describeChanges,
@@ -38,6 +44,7 @@ import {
 } from "./workspace/files";
 import type { SessionDraft, WorkspaceSession } from "./workspace/schema";
 import { contextName, editDraft, sessionsDrawer } from "./workspace/ui";
+import { userText } from "./workspace/view";
 
 // F1 and F2 open these draft settings directly.
 const SETTING_SECTIONS = ["context", "model"] as const;
@@ -124,7 +131,7 @@ async function localImages(
   return { text: rest.trim(), files };
 }
 
-type Interaction = "approvals" | "questions" | "inbox" | "model";
+type Interaction = "approvals" | "questions" | "model";
 type Command = (
   ctx: ExtensionCommandContext,
   words: string[],
@@ -349,6 +356,31 @@ export default function leverage(pi: ExtensionAPI): void {
   const stop = async () => {
     await requireSession(true).stop();
   };
+  // Takes every waiting message back from Leverage and puts its text in the
+  // editor, above whatever is typed there, the way Pi restores its queue.
+  const dequeue = async (editor: {
+    getText(): string;
+    setText(text: string): void;
+  }) => {
+    const current = requireSession(true);
+    const waiting = (current.view.docs["pi.inbox"]?.items ?? []).filter(
+      (item) => item.mode !== "write",
+    );
+    if (!waiting.length) {
+      return;
+    }
+    for (const item of waiting) {
+      await workspace.cancelQueued(
+        current.session.id,
+        String(item.id),
+        current.signal,
+      );
+    }
+    const texts = waiting.map((item) => userText(item.content));
+    editor.setText(
+      [...texts, editor.getText()].filter((one) => one.trim()).join("\n\n"),
+    );
+  };
   const showInteraction = async (kind: Interaction) => {
     await requireSession().interactions!.show(kind);
   };
@@ -566,6 +598,8 @@ export default function leverage(pi: ExtensionAPI): void {
           : undefined;
       const handleInput = editor.handleInput.bind(editor);
       editor.handleInput = (data) => {
+        // A keystroke is what keeps the person online, not an open window.
+        workspace.active();
         const completing =
           "isShowingAutocomplete" in editor &&
           typeof editor.isShowingAutocomplete === "function" &&
@@ -586,6 +620,37 @@ export default function leverage(pi: ExtensionAPI): void {
         const action = PI_KEYS.find(([key]) => keys.matches(data, key));
         if (!completing && !busy() && action) {
           runCommand(action[1]);
+          return;
+        }
+        // Pi's own keys: a follow-up waits for the turn to end, and the
+        // dequeue key brings every waiting message back into the editor.
+        if (
+          !completing &&
+          !busy() &&
+          keys.matches(data, "app.message.followUp")
+        ) {
+          const text = editor.getText().trim();
+          if (text && view) {
+            editor.addToHistory?.(text);
+            editor.setText("");
+            void submit({ text }, ctx, true).catch((error: unknown) => {
+              if (opening === generation) {
+                report(ctx, error);
+              }
+            });
+          }
+          return;
+        }
+        if (
+          !completing &&
+          !busy() &&
+          keys.matches(data, "app.message.dequeue")
+        ) {
+          void dequeue(editor).catch((error: unknown) => {
+            if (opening === generation) {
+              report(ctx, error);
+            }
+          });
           return;
         }
         if (matchesKey(data, "enter")) {
@@ -652,8 +717,11 @@ export default function leverage(pi: ExtensionAPI): void {
             view?.place,
             view?.session.id,
             view?.model,
+            "",
+            "People",
+            ...(view ? roster(view.doc).map((one) => personText(one)) : []),
           ]
-            .filter(Boolean)
+            .filter((line) => line !== undefined)
             .join("\n"),
         signal: lifetime.signal,
       });
@@ -732,7 +800,6 @@ export default function leverage(pi: ExtensionAPI): void {
       view ? showInteraction("model") : editSettings(ctx, "model"),
     approvals: () => showInteraction("approvals"),
     questions: () => showInteraction("questions"),
-    inbox: () => showInteraction("inbox"),
     files: async (ctx) => {
       const current = requireSession();
       await filesDrawer(ctx, current.session.id, current.signal);
@@ -1053,7 +1120,7 @@ export default function leverage(pi: ExtensionAPI): void {
           : undefined;
         if (!command) {
           throw new Error(
-            "Use /leverage sessions, new, open, history, files, outputs, changes, connectors, skills, stop, queue, approvals, questions, inbox, model, compact, rename, archive, restore, or exit.",
+            "Use /leverage sessions, new, open, history, files, outputs, changes, connectors, skills, stop, queue, approvals, questions, model, compact, rename, archive, restore, or exit.",
           );
         }
         await command(ctx, words, opening);

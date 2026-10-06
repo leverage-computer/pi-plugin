@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { workspace } from "../../src/workspace/api";
+import { PRESENCE_TIMING } from "../../src/workspace/socket";
 import { SessionReplica, type SessionView } from "../../src/workspace/view";
 import {
   eventually,
@@ -12,6 +14,7 @@ import {
 const fixtures: ReturnType<typeof workspaceFixture>[] = [];
 const sessions: SessionReplica[] = [];
 afterEach(async () => {
+  workspace.timing = PRESENCE_TIMING;
   for (const session of sessions.splice(0)) {
     session.close();
   }
@@ -249,4 +252,77 @@ test("a read that overlaps a live approval keeps it", async () => {
   release();
   await refreshing;
   expect(shared.value.docs["leverage.approvals"].items).toHaveLength(1);
+});
+
+test("shows who has the session open, who is typing, and who is online", async () => {
+  const { f, shared } = await open();
+  const doc = () => shared.doc;
+  // Joining tells the server the person is watching, and lists them back.
+  await eventually(() =>
+    f.frames.some((one) => one.type === "session.subscribe"),
+  );
+  expect(f.frames.find((one) => one.type === "session.subscribe")).toEqual({
+    type: "session.subscribe",
+    sessionId: SESSION,
+    afterCursor: expect.any(Number),
+    state: "active",
+  });
+  await eventually(() => doc().viewers.length === 1);
+  expect(doc().viewers).toEqual([
+    { userId: "owner", userName: "Alice", state: "active" },
+  ]);
+  expect(doc().presence.owner).toMatchObject({ status: "online" });
+  f.viewer(MEMBER, true);
+  f.typing(MEMBER, true);
+  f.presence(MEMBER, "online", ["codex"]);
+  await eventually(
+    () => doc().typing.length === 1 && doc().presence[MEMBER] !== undefined,
+  );
+  expect(doc().viewers.map((one) => one.userId)).toEqual(["owner", MEMBER]);
+  expect(doc().typing).toEqual([MEMBER]);
+  expect(doc().presence[MEMBER]).toMatchObject({
+    status: "online",
+    clients: ["codex"],
+  });
+  // Stepping away keeps the row but marks it, and leaving drops it with its typing.
+  f.viewer(MEMBER, true, "idle");
+  await eventually(() => doc().viewers[1]?.state === "idle");
+  f.viewer(MEMBER, false);
+  await eventually(() => doc().viewers.length === 1);
+  expect(doc().typing).toEqual([]);
+  // Workspace presence survives a fresh read, and an away status replaces online.
+  f.presence(MEMBER, "away");
+  await eventually(() => doc().presence[MEMBER]?.status === "away");
+  await shared.refresh();
+  expect(doc().presence[MEMBER]?.status).toBe("away");
+});
+
+test("a quiet person goes idle and stops heartbeats until they do something", async () => {
+  const f = fixture();
+  const api = f.client();
+  api.timing = { heartbeatMs: 30, idleMs: 120 };
+  const socket = await api.socket();
+  await socket.connect();
+  socket.subscribe(SESSION, 0);
+  const sent = (type: string) => f.frames.filter((one) => one.type === type);
+  await eventually(() => sent("presence.heartbeat").length >= 2);
+  await eventually(() => sent("session.presence.set").length === 1);
+  expect(sent("session.presence.set")[0]).toEqual({
+    type: "session.presence.set",
+    sessionId: SESSION,
+    state: "idle",
+  });
+  expect(f.viewers(SESSION)[0]?.state).toBe("idle");
+  // No heartbeats while idle. The last one may still be on its way.
+  await Bun.sleep(100);
+  const beats = sent("presence.heartbeat").length;
+  await Bun.sleep(100);
+  expect(sent("presence.heartbeat").length).toBe(beats);
+  // Doing something reports the person at once, and the subscription follows.
+  socket.active();
+  await eventually(() => sent("session.presence.set").length === 2);
+  expect(sent("session.presence.set")[1]).toMatchObject({ state: "active" });
+  await eventually(() => sent("presence.heartbeat").length > beats);
+  expect(f.viewers(SESSION)[0]?.state).toBe("active");
+  socket.close();
 });

@@ -288,6 +288,36 @@ export const sessionContextSchema = z.discriminatedUnion("type", [
 
 export type SessionContext = z.infer<typeof sessionContextSchema>;
 
+// Whether a person is online in the workspace, and the agent apps they are in.
+export const presenceStatusSchema = z.enum(["online", "away", "offline"]);
+
+export type PresenceStatus = z.infer<typeof presenceStatusSchema>;
+
+const presenceEntrySchema = z.object({
+  userId: z.string(),
+  status: presenceStatusSchema,
+  // Absent means unknown, not none. A kind from a newer server stays as text.
+  clients: z.array(z.string()).nullish(),
+});
+
+export type PresenceEntry = z.infer<typeof presenceEntrySchema>;
+
+// `active` is watching the session. `idle` has it open but is not watching.
+export const viewerStateSchema = z.enum(["active", "idle"]);
+
+export type ViewerState = z.infer<typeof viewerStateSchema>;
+
+// A person who has the session open. A missing state means active.
+export const viewerSchema = z.object({
+  userId: z.string(),
+  userName: z.string(),
+  state: viewerStateSchema.nullish(),
+});
+
+export type SessionViewer = z.infer<typeof viewerSchema>;
+
+const typistSchema = z.object({ userId: z.string(), userName: z.string() });
+
 // Frames the server sends on the workspace socket.
 const frameBase = z.object({
   cursor: z.number().nullish(),
@@ -377,6 +407,37 @@ export const eventSchema = z.discriminatedUnion("type", [
     type: z.literal("session.access_revoked"),
     sessionId: z.string(),
   }),
+  frameBase.extend({
+    type: z.literal("presence.snapshot"),
+    entries: z.array(presenceEntrySchema),
+  }),
+  frameBase.extend({
+    type: z.literal("presence.update"),
+    ...presenceEntrySchema.shape,
+  }),
+  frameBase.extend({
+    type: z.literal("session.presence.snapshot"),
+    sessionId: z.string(),
+    viewers: z.array(viewerSchema),
+  }),
+  frameBase.extend({
+    type: z.literal("session.presence.update"),
+    sessionId: z.string(),
+    viewer: viewerSchema,
+    active: z.boolean(),
+    state: viewerStateSchema.nullish(),
+  }),
+  frameBase.extend({
+    type: z.literal("session.typing.snapshot"),
+    sessionId: z.string(),
+    users: z.array(typistSchema),
+  }),
+  frameBase.extend({
+    type: z.literal("session.typing.update"),
+    sessionId: z.string(),
+    ...typistSchema.shape,
+    active: z.boolean(),
+  }),
 ]);
 
 export type WorkspaceEvent = z.infer<typeof eventSchema>;
@@ -449,8 +510,14 @@ export const clientFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("session.subscribe"),
     sessionId: z.string(),
     afterCursor: z.number().optional(),
+    state: viewerStateSchema.optional(),
   }),
   z.object({ type: z.literal("session.unsubscribe"), sessionId: z.string() }),
+  z.object({
+    type: z.literal("session.presence.set"),
+    sessionId: z.string(),
+    state: viewerStateSchema,
+  }),
   z.object({ type: z.literal("presence.heartbeat") }),
 ]);
 

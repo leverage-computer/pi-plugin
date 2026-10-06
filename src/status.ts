@@ -1,4 +1,5 @@
 import {
+  keyText,
   rawKeyHint,
   type Theme,
   type ThemeColor,
@@ -6,7 +7,152 @@ import {
 import { Loader, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { clean } from "./drawers";
 import type { SessionView } from "./session";
-import type { SessionDraft } from "./workspace/schema";
+import type {
+  PresenceEntry,
+  SessionDraft,
+  WorkspaceMember,
+} from "./workspace/schema";
+import { type SessionDoc, userText } from "./workspace/view";
+
+/**
+ * Where a person is, as the web app's session header puts it. `here` and
+ * `typing` have the session open and watched. `idle` has it open but is not
+ * watching. `online` is in the workspace, but not on this session.
+ */
+export type Presence =
+  | "typing"
+  | "here"
+  | "idle"
+  | "online"
+  | "away"
+  | "offline";
+
+export interface Person {
+  userId: string;
+  name: string;
+  presence: Presence;
+  isOwner: boolean;
+  isSelf: boolean;
+  // The agent app the person is online in, when it is one.
+  app?: string;
+}
+
+const PRESENCE_RANK: Record<Presence, number> = {
+  typing: 0,
+  here: 1,
+  idle: 2,
+  online: 3,
+  away: 4,
+  offline: 5,
+};
+
+// Only an agent app gets named. Leverage's own apps and Pi get nothing.
+const APP_NAMES: Record<string, string> = {
+  codex: "Codex",
+  opencode: "OpenCode",
+};
+
+/** The agent app an online person is in, if any. An away person has none. */
+export function appOf(entry: PresenceEntry | undefined): string | undefined {
+  if (entry?.status !== "online") {
+    return undefined;
+  }
+  return (entry.clients ?? []).map((client) => APP_NAMES[client]).find(Boolean);
+}
+
+export function memberName(
+  members: readonly WorkspaceMember[],
+  userId: string,
+): string | undefined {
+  return members.find((one) => one.id === userId)?.name ?? undefined;
+}
+
+/**
+ * The owner and everyone who has the session open, the most present first.
+ * The owner is listed even when away, with where they are in the workspace.
+ */
+export function roster(doc: SessionDoc): Person[] {
+  const ownerId = doc.session?.ownerId ?? undefined;
+  const people = new Map<string, Person>();
+  const person = (
+    userId: string,
+    name: string | undefined,
+    presence: Presence,
+  ): Person => {
+    const app = appOf(doc.presence[userId]);
+    return {
+      userId,
+      name: name || memberName(doc.members, userId) || "Teammate",
+      // You are reading the line, so your own row is never away.
+      presence: userId === doc.userId ? "here" : presence,
+      isOwner: userId === ownerId,
+      isSelf: userId === doc.userId,
+      ...(app ? { app } : {}),
+    };
+  };
+  if (ownerId) {
+    const status = doc.presence[ownerId]?.status;
+    people.set(
+      ownerId,
+      person(
+        ownerId,
+        undefined,
+        status === "online" ? "online" : status === "away" ? "away" : "offline",
+      ),
+    );
+  }
+  for (const viewer of doc.viewers) {
+    people.set(
+      viewer.userId,
+      person(
+        viewer.userId,
+        viewer.userName,
+        doc.typing.includes(viewer.userId)
+          ? "typing"
+          : viewer.state === "idle"
+            ? "idle"
+            : "here",
+      ),
+    );
+  }
+  return [...people.values()].sort(
+    (left, right) =>
+      PRESENCE_RANK[left.presence] - PRESENCE_RANK[right.presence] ||
+      Number(right.isOwner) - Number(left.isOwner) ||
+      left.name.localeCompare(right.name),
+  );
+}
+
+const PRESENCE_MARK: Record<Presence, [ThemeColor, string, string]> = {
+  typing: ["accent", "●", "typing…"],
+  here: ["success", "●", ""],
+  idle: ["warning", "◐", "idle"],
+  online: ["warning", "◐", "online"],
+  away: ["dim", "○", "away"],
+  offline: ["dim", "○", "offline"],
+};
+
+/** One person as the status line shows them: a mark, the name, and where they are. */
+export function personText(
+  one: Person,
+  paint: (color: ThemeColor, value: string) => string = (_, value) => value,
+): string {
+  const [color, mark, state] = PRESENCE_MARK[one.presence];
+  const notes = [
+    one.isOwner ? "owner" : "",
+    one.isSelf ? "you" : "",
+    state,
+    one.app ? `on ${one.app}` : "",
+  ].filter(Boolean);
+  return [
+    paint(color, mark),
+    paint(
+      one.presence === "here" || one.presence === "typing" ? "text" : "dim",
+      one.name,
+    ),
+    ...(notes.length ? [paint("muted", `(${notes.join(", ")})`)] : []),
+  ].join(" ");
+}
 
 export interface DraftStatus {
   settings?: SessionDraft;
@@ -51,7 +197,27 @@ export function statusLines(
   if (view) {
     const approvals = view.interactions?.approvalCount ?? 0;
     const questions = view.interactions?.questionCount ?? 0;
+    // Everyone else on the session, always, so a shared session feels shared.
+    const others = roster(view.doc).filter((one) => !one.isSelf);
+    // Messages waiting for the turn to end, as Pi lists its own queue.
+    const waiting = (view.view.docs["pi.inbox"]?.items ?? []).filter(
+      (item) => item.mode !== "write",
+    );
     return [
+      others.length
+        ? join(others.map((one) => personText(one, paint)))
+        : paint("dim", "Only you here"),
+      ...waiting.map((item) =>
+        paint("dim", `Follow-up: ${userText(item.content).split("\n")[0]}`),
+      ),
+      ...(waiting.length
+        ? [
+            paint(
+              "dim",
+              `↳ ${keyText("app.message.dequeue")} to edit all queued messages`,
+            ),
+          ]
+        : []),
       ...warning(
         !view.doc.canWrite,
         "Read-only · ask the owner for collaborator access",
