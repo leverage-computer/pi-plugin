@@ -504,79 +504,16 @@ describe("questions", () => {
     ]);
   });
 
-  test("viewers cannot open questions, the inbox, or the model", async () => {
+  test("viewers cannot open questions or the model", async () => {
     const { pending } = await setup({
       user: MEMBER,
       prepare: (f) => {
         f.session.visibility = "workspace";
       },
     });
-    for (const kind of ["questions", "inbox", "model"] as const) {
+    for (const kind of ["questions", "model"] as const) {
       await rejects(pending.show(kind), /read-only/);
     }
-  });
-});
-
-describe("queued messages", () => {
-  // One message waits for its turn after one that was already delivered.
-  function queue(f: Fixture) {
-    const waiting = input("Next turn", { status: "queued" });
-    f.state.queue = [waiting];
-    f.state.nativeMessages = [input("Already sent"), waiting];
-    return waiting;
-  }
-
-  test("send it now steers the queued message into the running turn", async () => {
-    const lists: string[][] = [];
-    const { f, pending, actions } = await setup({
-      ui: {
-        select: async (title, options) => {
-          if (title === "Messages waiting for their turn") {
-            lists.push(options);
-            return options[0];
-          }
-          return "Send it now";
-        },
-      },
-    });
-    const waiting = queue(f);
-    await pending.show("inbox");
-    expect(lists).toEqual([["1. Next turn"]]);
-    await eventually(() => actions().length === 1);
-    expect(actions()).toEqual([
-      { type: "session.queue.steer", sessionId: SESSION, uuid: waiting.uuid },
-    ]);
-  });
-
-  test("take it back cancels only after confirmation", async () => {
-    let confirmed = false;
-    const { f, pending, actions } = await setup({
-      ui: {
-        select: async (_title, options) =>
-          options.includes("Take it back") ? "Take it back" : options[0],
-        confirm: async (title, body) => {
-          expect(title).toBe("Take this message back?");
-          expect(body).toBe("Next turn");
-          return confirmed;
-        },
-      },
-    });
-    const waiting = queue(f);
-    await pending.show("inbox");
-    await Bun.sleep(50);
-    expect(actions()).toEqual([]);
-    confirmed = true;
-    await pending.show("inbox");
-    await eventually(() => actions().length === 1);
-    expect(actions()).toEqual([
-      { type: "session.queue.cancel", sessionId: SESSION, uuid: waiting.uuid },
-    ]);
-  });
-
-  test("an empty queue says so", async () => {
-    const { pending, notifications } = await setup();
-    await pending.show("inbox");
-    expect(notifications).toEqual(["No messages are waiting."]);
   });
 });
 

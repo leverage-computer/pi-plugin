@@ -38,7 +38,11 @@ import {
   uploadSchema,
   type WorkspaceSession,
 } from "./schema";
-import { WorkspaceSocket } from "./socket";
+import {
+  PRESENCE_TIMING,
+  type PresenceTiming,
+  WorkspaceSocket,
+} from "./socket";
 
 // The most a download reads into memory before it is saved.
 const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
@@ -127,6 +131,8 @@ export class WorkspaceClient {
   private identity?: Promise<string>;
   private live?: WorkspaceSocket;
   private settings?: LeverageConnection;
+  /** How presence is reported. Set before the socket opens. */
+  timing: PresenceTiming = PRESENCE_TIMING;
 
   /** Follows the connection. A new one forgets the old workspace and socket. */
   open(): void {
@@ -171,8 +177,13 @@ export class WorkspaceClient {
   async socket(signal?: AbortSignal): Promise<WorkspaceSocket> {
     const workspaceId = await this.workspaceId(signal);
     signal?.throwIfAborted();
-    this.live ??= new WorkspaceSocket(workspaceId);
+    this.live ??= new WorkspaceSocket(workspaceId, this.timing);
     return this.live;
+  }
+
+  /** The person did something in Pi, which keeps them online. */
+  active(): void {
+    this.live?.active();
   }
 
   read<T>(path: string, schema: z.ZodType<T>, signal?: AbortSignal) {
@@ -388,6 +399,7 @@ export class WorkspaceClient {
     decision: Decision,
     signal?: AbortSignal,
   ): Promise<Invocation> {
+    this.active();
     const reply = await api.json(
       `/api/tool-invocations/${encodeURIComponent(invocationId)}/decide`,
       "POST",
@@ -520,6 +532,7 @@ export class WorkspaceClient {
     signal: AbortSignal,
   ): Promise<SessionInput> {
     const socket = await this.socket(signal);
+    socket.active();
     const frame = sessionMessageSchema.parse({
       type: "session.message",
       sessionId,
@@ -549,6 +562,7 @@ export class WorkspaceClient {
   ): Promise<void> {
     const clientRequestId = randomUUID();
     const socket = await this.socket(signal);
+    socket.active();
     await socket.request(
       {
         type: "session.stop",
@@ -603,6 +617,7 @@ export class WorkspaceClient {
   ): Promise<void> {
     const clientRequestId = randomUUID();
     const socket = await this.socket(signal);
+    socket.active();
     await socket.request(
       {
         type: "session.answer",
@@ -661,18 +676,6 @@ export class WorkspaceClient {
   ): Promise<void> {
     await (await this.socket(signal)).post({
       type: "session.queue.cancel",
-      sessionId,
-      uuid,
-    });
-  }
-
-  async steerQueued(
-    sessionId: string,
-    uuid: string,
-    signal?: AbortSignal,
-  ): Promise<void> {
-    await (await this.socket(signal)).post({
-      type: "session.queue.steer",
       sessionId,
       uuid,
     });

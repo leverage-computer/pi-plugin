@@ -11,6 +11,8 @@ import {
   type ExtensionActions,
   type ExtensionCommandContextActions,
   ExtensionRunner,
+  type ExtensionUIContext,
+  getSelectListTheme,
   initTheme,
   ModelRegistry,
   ModelRuntime,
@@ -18,10 +20,13 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { HISTORY_ENTRY, sessionLink } from "../src/session";
+import { personText, roster } from "../src/status";
+import type { SessionDoc } from "../src/workspace/view";
 import {
   eventually,
   exampleSession,
   invocation,
+  MEMBER,
   SESSION,
   workspaceFixture,
 } from "./workspace/fixture";
@@ -98,6 +103,13 @@ async function load(
         options.activeTools?.(names);
       },
       getActiveTools: () => [],
+      // A terminal view copies its context, which reads these lazily.
+      getAllTools: () => [],
+      getCommands: () => [],
+      getSettings: () => ({}) as never,
+      getThinkingLevel: () => "off",
+      setThinkingLevel() {},
+      setLabel() {},
       sendMessage() {
         options.onPrompt?.();
       },
@@ -865,5 +877,176 @@ describe("Pi hosted frontend", () => {
       expect.objectContaining({ content: "Continue after recovery" }),
     ]);
     expect(notices).toHaveLength(1);
+  });
+});
+
+describe("People on the session", () => {
+  test("the status line always says who else is here, and follows them live", async () => {
+    const f = leverage();
+    const runner = await load();
+    f.configure(runner, SESSION);
+    const widgets: string[] = [];
+    runner.setUIContext(
+      {
+        ...runner.getUIContext(),
+        setWidget: (_key, value) => {
+          if (typeof value === "function") {
+            widgets.push(
+              stripVTControlCharacters(
+                value({ requestRender() {} } as never, {} as never)
+                  .render(120)
+                  .join("\n"),
+              ),
+            );
+          }
+        },
+      },
+      "tui",
+    );
+    await runner.emit({ type: "session_start", reason: "startup" });
+    const latest = () => widgets.at(-1) ?? "";
+    await eventually(() => latest().includes("Only you here"));
+    // Pi told Leverage the person is watching when it opened the session.
+    await eventually(() => f.sent("session.subscribe").length === 1);
+    expect(f.sent("session.subscribe")[0]).toMatchObject({ state: "active" });
+    f.viewer(MEMBER, true);
+    await eventually(() => latest().includes("● Bob"));
+    f.typing(MEMBER, true);
+    await eventually(() => latest().includes("● Bob (typing…)"));
+    f.typing(MEMBER, false);
+    f.viewer(MEMBER, true, "idle");
+    await eventually(() => latest().includes("◐ Bob (idle)"));
+    f.viewer(MEMBER, false);
+    await eventually(() => latest().includes("Only you here"));
+  });
+
+  test("the owner is always listed, the most present first, with their agent app", () => {
+    const doc: SessionDoc = {
+      session: { ...exampleSession(), ownerId: "owner" },
+      version: 1,
+      canWrite: true,
+      revoked: false,
+      connection: "live",
+      userId: "me",
+      members: [
+        { id: "owner", name: "Alice" },
+        { id: "me", name: "Me" },
+      ],
+      skills: [],
+      viewers: [
+        { userId: "me", userName: "Me", state: "idle" },
+        { userId: "carol", userName: "Carol", state: "idle" },
+        { userId: MEMBER, userName: "Bob", state: "active" },
+      ],
+      typing: ["carol"],
+      presence: {
+        owner: { userId: "owner", status: "online", clients: ["codex"] },
+        [MEMBER]: { userId: MEMBER, status: "away", clients: ["codex"] },
+      },
+    };
+    const people = roster(doc);
+    expect(people.map((one) => [one.name, one.presence])).toEqual([
+      ["Carol", "typing"],
+      ["Bob", "here"],
+      ["Me", "here"],
+      ["Alice", "online"],
+    ]);
+    expect(people.map((one) => personText(one))).toEqual([
+      "● Carol (typing…)",
+      "● Bob",
+      "● Me (you)",
+      "◐ Alice (owner, online, on Codex)",
+    ]);
+    expect(people.find((one) => one.name === "Me")?.isSelf).toBe(true);
+    // An owner nobody has seen is offline, and an unknown member is a teammate.
+    const quiet = roster({ ...doc, presence: {}, viewers: [], typing: [] });
+    expect(quiet.map((one) => personText(one))).toEqual([
+      "○ Alice (owner, offline)",
+    ]);
+    expect(
+      roster({
+        ...doc,
+        viewers: [{ userId: "x", userName: "", state: "active" }],
+      }).map((one) => one.name),
+    ).toContain("Teammate");
+  });
+});
+
+describe("Steering", () => {
+  test("Enter steers, Alt+Enter queues a follow-up, and Alt+Q takes it back into the editor", async () => {
+    const f = leverage();
+    f.update({ status: "active", turnId: "turn_1" });
+    const runner = await load();
+    f.configure(runner, SESSION);
+    let factory: Parameters<ExtensionUIContext["setEditorComponent"]>[0];
+    const widgets: string[] = [];
+    runner.setUIContext(
+      {
+        ...runner.getUIContext(),
+        setEditorComponent: (value) => {
+          factory = value;
+        },
+        setWidget: (_key, value) => {
+          if (typeof value === "function") {
+            widgets.push(
+              stripVTControlCharacters(
+                value({ requestRender() {} } as never, {} as never)
+                  .render(120)
+                  .join("\n"),
+              ),
+            );
+          }
+        },
+      },
+      "tui",
+    );
+    await runner.emit({ type: "session_start", reason: "startup" });
+    const latest = () => widgets.at(-1) ?? "";
+    await eventually(() => latest().includes("Only you here"));
+    // Pi's composer, with Pi's keys for a follow-up and for the queue.
+    const keys = {
+      matches: (data: string, action: string) =>
+        (action === "app.message.followUp" && data === "\u001b\r") ||
+        (action === "app.message.dequeue" && data === "\u001bq"),
+    } as never;
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+      italic: (text: string) => text,
+      borderColor: (text: string) => text,
+      selectList: getSelectListTheme(),
+    } as never;
+    const editor = factory!({ requestRender() {} } as never, theme, keys);
+    // Enter while the agent works steers the turn.
+    await runner.emitInput("Also check the logs", undefined, "interactive");
+    expect(f.sent("session.message")[0]).toMatchObject({
+      content: "Also check the logs",
+      delivery: "send",
+    });
+    editor.setText("Then run the full suite");
+    editor.handleInput?.("\u001b\r");
+    await eventually(() => f.sent("session.message").length === 2);
+    expect(f.sent("session.message")[1]).toMatchObject({
+      content: "Then run the full suite",
+      delivery: "queue",
+    });
+    expect(editor.getText()).toBe("");
+    await eventually(() =>
+      latest().includes("Follow-up: Then run the full suite"),
+    );
+    expect(latest()).toContain("to edit all queued messages");
+    // The dequeue key takes the follow-up back, above what is typed now.
+    editor.setText("and lint");
+    editor.handleInput?.("\u001bq");
+    await eventually(() => f.sent("session.queue.cancel").length === 1);
+    expect(f.sent("session.queue.cancel")[0]).toMatchObject({
+      sessionId: SESSION,
+      uuid: f.sent("session.message")[1]?.clientRequestId,
+    });
+    await eventually(
+      () => editor.getText() === "Then run the full suite\n\nand lint",
+    );
+    await eventually(() => !latest().includes("Follow-up:"));
   });
 });

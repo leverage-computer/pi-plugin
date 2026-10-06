@@ -6,6 +6,9 @@ import {
   type ClientFrame,
   clientFrameSchema,
   eventSchema,
+  type PresenceEntry,
+  type SessionViewer,
+  type ViewerState,
   type WorkspaceEvent,
 } from "./schema";
 
@@ -18,8 +21,19 @@ export type SocketState =
 const RETRY_FLOOR_MS = 500;
 const RETRY_CEILING_MS = 10_000;
 const HANDSHAKE_MS = 15_000;
-const HEARTBEAT_MS = 20_000;
 const REQUEST_MS = 30_000;
+
+/** How often the person's presence is reported, and when they count as away. */
+export interface PresenceTiming {
+  heartbeatMs: number;
+  idleMs: number;
+}
+
+// The web app's rhythm: a heartbeat a minute, and away after 4.5 quiet minutes.
+export const PRESENCE_TIMING: PresenceTiming = {
+  heartbeatMs: 60_000,
+  idleMs: 4.5 * 60 * 1000,
+};
 
 // Frames arrive as text. Anything that is not a known event is ignored.
 function parseFrame(data: unknown): WorkspaceEvent | undefined {
@@ -43,13 +57,25 @@ export class WorkspaceSocket {
   private retry?: ReturnType<typeof setTimeout>;
   private attempt = 0;
   private status: SocketState = "disconnected";
+  // When the person last did something here, and whether that was long ago.
+  private lastActivity = Date.now();
+  private idle = false;
   userId?: string;
+  /** Who is online in the workspace, from the server's presence frames. */
+  readonly presence = new Map<string, PresenceEntry>();
+  // Who has each subscribed session open, and who is typing to it. The
+  // socket keeps them, so a view that attaches later still sees them.
+  readonly viewers = new Map<string, Map<string, SessionViewer>>();
+  readonly typing = new Map<string, Set<string>>();
 
   get connection(): SocketState {
     return this.status;
   }
 
-  constructor(private readonly workspaceId: string) {}
+  constructor(
+    private readonly workspaceId: string,
+    private readonly timing: PresenceTiming = PRESENCE_TIMING,
+  ) {}
   onEvent(listener: (event: WorkspaceEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -133,17 +159,76 @@ export class WorkspaceSocket {
                   type: "session.subscribe",
                   sessionId,
                   afterCursor,
+                  state: this.viewerState,
                 });
               }
               clearInterval(this.heartbeat);
               this.heartbeat = setInterval(
-                () => this.send({ type: "presence.heartbeat" }),
-                HEARTBEAT_MS,
+                () => this.tick(),
+                this.timing.heartbeatMs,
               );
               this.state("live");
               resolve();
               return true;
             }),
+            Match.when({ type: "presence.snapshot" }, ({ entries }) => {
+              this.presence.clear();
+              for (const entry of entries) {
+                this.presence.set(entry.userId, entry);
+              }
+              return true;
+            }),
+            Match.when({ type: "presence.update" }, (entry) => {
+              this.presence.set(entry.userId, entry);
+              return true;
+            }),
+            Match.when(
+              { type: "session.presence.snapshot", sessionId: subscribed },
+              ({ sessionId, viewers }) => {
+                this.viewers.set(
+                  sessionId,
+                  new Map(viewers.map((one) => [one.userId, one])),
+                );
+                return true;
+              },
+            ),
+            Match.when(
+              { type: "session.presence.update", sessionId: subscribed },
+              ({ sessionId, viewer, active, state }) => {
+                const viewers = this.viewers.get(sessionId) ?? new Map();
+                this.viewers.set(sessionId, viewers);
+                if (active) {
+                  viewers.set(viewer.userId, { ...viewer, state });
+                } else {
+                  viewers.delete(viewer.userId);
+                  this.typing.get(sessionId)?.delete(viewer.userId);
+                }
+                return true;
+              },
+            ),
+            Match.when(
+              { type: "session.typing.snapshot", sessionId: subscribed },
+              ({ sessionId, users }) => {
+                this.typing.set(
+                  sessionId,
+                  new Set(users.map((one) => one.userId)),
+                );
+                return true;
+              },
+            ),
+            Match.when(
+              { type: "session.typing.update", sessionId: subscribed },
+              ({ sessionId, userId, active }) => {
+                const typing = this.typing.get(sessionId) ?? new Set();
+                this.typing.set(sessionId, typing);
+                if (active) {
+                  typing.add(userId);
+                } else {
+                  typing.delete(userId);
+                }
+                return true;
+              },
+            ),
             // A replayed session frame is dropped once its cursor was seen.
             Match.when(
               {
@@ -226,11 +311,51 @@ export class WorkspaceSocket {
       type: "session.subscribe",
       sessionId,
       afterCursor: this.sessions.get(sessionId),
+      state: this.viewerState,
     });
+  }
+
+  private get viewerState(): ViewerState {
+    return this.idle ? "idle" : "active";
+  }
+
+  /**
+   * The person did something: typed, sent, or answered. Only that keeps them
+   * online, so an open but untouched Pi lets them go away like other apps.
+   */
+  active(): void {
+    this.lastActivity = Date.now();
+    if (!this.idle) {
+      return;
+    }
+    this.idle = false;
+    this.send({ type: "presence.heartbeat" });
+    this.watch("active");
+  }
+
+  // Reports presence while the person is around. Going quiet tells the server
+  // once that they stopped watching, and then nothing until they are back.
+  private tick(): void {
+    if (Date.now() - this.lastActivity < this.timing.idleMs) {
+      this.send({ type: "presence.heartbeat" });
+      return;
+    }
+    if (!this.idle) {
+      this.idle = true;
+      this.watch("idle");
+    }
+  }
+
+  private watch(state: ViewerState): void {
+    for (const sessionId of this.sessions.keys()) {
+      this.send({ type: "session.presence.set", sessionId, state });
+    }
   }
 
   unsubscribe(sessionId: string): void {
     this.sessions.delete(sessionId);
+    this.viewers.delete(sessionId);
+    this.typing.delete(sessionId);
     this.send({ type: "session.unsubscribe", sessionId });
   }
 

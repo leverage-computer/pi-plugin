@@ -10,7 +10,7 @@ import {
   userText,
 } from "./workspace/view";
 
-type Interaction = "approvals" | "questions" | "inbox" | "model";
+type Interaction = "approvals" | "questions" | "model";
 
 /** The model and effort a person picked for their next message. */
 export type ModelChoice = { model: string; reasoningEffort?: string };
@@ -216,9 +216,6 @@ export class PendingInteractions {
     try {
       if (kind === "model") {
         return await this.model(signal);
-      }
-      if (kind === "inbox") {
-        return await this.inbox(signal);
       }
       await this.source.refresh();
       if (signal.aborted) {
@@ -528,57 +525,6 @@ export class PendingInteractions {
   }
 
   // Queued messages can be sent into the running turn now, or taken back.
-  private async inbox(signal: AbortSignal): Promise<void> {
-    await this.source.refresh();
-    while (!signal.aborted) {
-      // The inbox holds what waits for its turn, as Pi Durable queues it.
-      const queued = (this.docs["pi.inbox"]?.items ?? []).flatMap((item) =>
-        item.mode === "write"
-          ? []
-          : [{ uuid: String(item.id), content: userText(item.content) }],
-      );
-      if (!queued.length) {
-        this.ui.notify("No messages are waiting.", "info");
-        return;
-      }
-      const labels = queued.map(
-        (input, index) => `${index + 1}. ${input.content.split("\n")[0]}`,
-      );
-      const picked = await this.ui.choose({
-        title: "Messages waiting for their turn",
-        choices: labels,
-        signal,
-      });
-      const input =
-        picked === undefined ? undefined : queued[labels.indexOf(picked)];
-      if (!input) {
-        return;
-      }
-      const action = await this.ui.choose({
-        title: input.content,
-        choices: ["Send it now", "Take it back", "Back"],
-        signal,
-      });
-      if (action === "Send it now") {
-        await workspace.steerQueued(this.source.id, input.uuid, signal);
-        return;
-      }
-      if (action === "Take it back") {
-        const confirmed = await this.ui.confirm({
-          title: "Take this message back?",
-          body: input.content,
-          signal,
-        });
-        if (confirmed) {
-          await workspace.cancelQueued(this.source.id, input.uuid, signal);
-        }
-        return;
-      }
-      if (action === undefined) {
-        return;
-      }
-    }
-  }
 
   // Leverage changes a session's model with the next message, so the choice waits for it.
   private async model(signal: AbortSignal): Promise<void> {

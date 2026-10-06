@@ -1,8 +1,15 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { api } from "../api";
 import { chooseDrawer, type DrawerItem, textDrawer } from "../drawers";
+import { appOf, memberName } from "../status";
 import { workspace } from "./api";
-import type { Channel, SessionDraft, WorkspaceSession } from "./schema";
+import type {
+  Channel,
+  PresenceEntry,
+  SessionDraft,
+  WorkspaceMember,
+  WorkspaceSession,
+} from "./schema";
 
 const relative = new Intl.RelativeTimeFormat("en", {
   numeric: "auto",
@@ -200,9 +207,32 @@ const LIST_CHANGES = new Set([
   "session.rename.accepted",
 ]);
 
+// Whether a session's owner is around, for the list. Presence frames keep it current.
+const PRESENCE_CHANGES = new Set(["presence.snapshot", "presence.update"]);
+
+// The owner and whether they are online now: a mark, their name, and their app.
+// An owner the member list does not name gets no line.
+function ownerText(
+  session: WorkspaceSession,
+  members: WorkspaceMember[],
+  presence: ReadonlyMap<string, PresenceEntry>,
+): string {
+  const name = session.ownerId && memberName(members, session.ownerId);
+  if (!session.ownerId || !name) {
+    return "";
+  }
+  const entry = presence.get(session.ownerId);
+  const mark =
+    entry?.status === "online" ? "●" : entry?.status === "away" ? "◐" : "○";
+  const app = appOf(entry);
+  return `${mark} ${name}${app ? ` on ${app}` : ""}`;
+}
+
 function sessionItems(
   sessions: WorkspaceSession[],
   channels: Channel[],
+  members: WorkspaceMember[],
+  presence: ReadonlyMap<string, PresenceEntry>,
 ): DrawerItem[] {
   return sessions
     .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
@@ -214,6 +244,7 @@ function sessionItems(
         one.status.charAt(0).toUpperCase() + one.status.slice(1),
         one.model ?? one.providerFamily,
         ago(one.updatedAt ?? undefined),
+        ownerText(one, members, presence),
       ]
         .filter(Boolean)
         .join(" · "),
@@ -236,10 +267,15 @@ export async function sessionsDrawer(
   // The connection names the viewer, which tells whose sessions are shared.
   await socket.connect().catch(() => {});
   while (!signal.aborted) {
-    const [channels, choices] = await Promise.all([
+    const [channels, choices, members] = await Promise.all([
       workspace.channels(signal),
       workspace.choices(signal),
+      workspace.members(signal),
     ]);
+    const items = (list: WorkspaceSession[]) => [
+      ...fixed(),
+      ...sessionItems(list, channels, members, socket.presence),
+    ];
     const home = channels.find(
       (one) =>
         api.connection.directory === `/${api.connection.workspace}/${one.name}`,
@@ -284,19 +320,23 @@ export async function sessionsDrawer(
     let sessions = await listed();
     const picked = await chooseDrawer(ctx, {
       title: "Leverage sessions",
-      items: [...fixed(), ...sessionItems(sessions, channels)],
+      items: items(sessions),
       signal,
       query,
       more: "actions",
       live: (update) =>
         socket.onEvent((event) => {
+          if (PRESENCE_CHANGES.has(event.type)) {
+            update(items(sessions));
+            return;
+          }
           if (!LIST_CHANGES.has(event.type)) {
             return;
           }
           void listed()
             .then((next) => {
               sessions = next;
-              update([...fixed(), ...sessionItems(next, channels)]);
+              update(items(next));
             })
             .catch(() => {});
         }),

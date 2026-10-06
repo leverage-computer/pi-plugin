@@ -106,6 +106,44 @@ export function workspaceFixture(extra?: Extra) {
   }> = [];
   const frames: Array<Record<string, unknown>> = [];
   const connections = new Set<ServerWebSocket<{ user: string }>>();
+  // Which sessions each connection watches, like Leverage's presence registry.
+  const watching = new Map<
+    ServerWebSocket<{ user: string }>,
+    Map<string, "active" | "idle">
+  >();
+  const personName = (user: string) => (user === "owner" ? "Alice" : "Bob");
+  const viewersOf = (sessionId: string) =>
+    [...watching]
+      .filter(([, sessions]) => sessions.has(sessionId))
+      .map(([ws, sessions]) => ({
+        userId: ws.data.user,
+        userName: personName(ws.data.user),
+        state: sessions.get(sessionId),
+      }));
+  const watched = (
+    ws: ServerWebSocket<{ user: string }>,
+    sessionId: string,
+    active: boolean,
+    state?: "active" | "idle",
+  ) => {
+    for (const other of connections) {
+      if (other !== ws) {
+        other.send(
+          JSON.stringify({
+            type: "session.presence.update",
+            sessionId,
+            viewer: {
+              userId: ws.data.user,
+              userName: personName(ws.data.user),
+              userImage: null,
+            },
+            active,
+            state,
+          }),
+        );
+      }
+    }
+  };
   const events = new Map<string, TranscriptRow[]>();
   const approvals: Invocation[] = [];
   const uploads: Array<{ id: string; bytes: number; completed: boolean }> = [];
@@ -481,12 +519,27 @@ export function workspaceFixture(extra?: Extra) {
     websocket: {
       open(ws) {
         connections.add(ws);
+        watching.set(ws, new Map());
         ws.send(
           JSON.stringify({ type: "connection.ready", userId: ws.data.user }),
+        );
+        ws.send(
+          JSON.stringify({
+            type: "presence.snapshot",
+            entries: [...connections].map((one) => ({
+              userId: one.data.user,
+              status: "online",
+              clients: ["leverage/cli"],
+            })),
+          }),
         );
       },
       close(ws) {
         connections.delete(ws);
+        for (const sessionId of watching.get(ws)?.keys() ?? []) {
+          watched(ws, sessionId, false);
+        }
+        watching.delete(ws);
       },
       message(ws, raw) {
         const frame = JSON.parse(String(raw)) as Record<string, unknown>;
@@ -494,6 +547,32 @@ export function workspaceFixture(extra?: Extra) {
         const reply = (value: Record<string, unknown>) =>
           ws.send(JSON.stringify(value));
         switch (frame.type) {
+          case "session.subscribe": {
+            const sessionId = String(frame.sessionId);
+            const state = frame.state === "idle" ? "idle" : "active";
+            watching.get(ws)?.set(sessionId, state);
+            reply({
+              type: "session.presence.snapshot",
+              sessionId,
+              viewers: viewersOf(sessionId),
+            });
+            reply({ type: "session.typing.snapshot", sessionId, users: [] });
+            watched(ws, sessionId, true, state);
+            return;
+          }
+          case "session.unsubscribe": {
+            const sessionId = String(frame.sessionId);
+            watching.get(ws)?.delete(sessionId);
+            watched(ws, sessionId, false);
+            return;
+          }
+          case "session.presence.set": {
+            const sessionId = String(frame.sessionId);
+            const state = frame.state === "idle" ? "idle" : "active";
+            watching.get(ws)?.set(sessionId, state);
+            watched(ws, sessionId, true, state);
+            return;
+          }
           case "session.create": {
             if (!created.has(String(frame.clientRequestId))) {
               created.add(String(frame.clientRequestId));
@@ -546,6 +625,29 @@ export function workspaceFixture(extra?: Extra) {
               version: state.version,
               messages: [message],
             });
+            return;
+          }
+          // Taking a message back withdraws it, which empties the inbox.
+          case "session.queue.cancel": {
+            const uuid = String(frame.uuid);
+            const taken = [...state.queue, ...state.nativeMessages].find(
+              (one) => one.uuid === uuid,
+            );
+            state.queue = state.queue.filter((one) => one.uuid !== uuid);
+            state.nativeMessages = state.nativeMessages.filter(
+              (one) => one.uuid !== uuid,
+            );
+            if (taken) {
+              state.version++;
+              publish({
+                type: "session.messages.updated",
+                _topic: "session",
+                cursor: ++cursor,
+                sessionId: String(frame.sessionId),
+                version: state.version,
+                messages: [{ ...taken, status: "withdrawn" }],
+              });
+            }
             return;
           }
           case "session.stop":
@@ -609,6 +711,40 @@ export function workspaceFixture(extra?: Extra) {
     emit,
     update,
     server,
+    /** Who watches a session right now, as the server would list them. */
+    viewers: viewersOf,
+    // Someone else's presence changes, as the server would tell every client.
+    presence(
+      userId: string,
+      status: "online" | "away" | "offline",
+      clients?: string[],
+    ) {
+      publish({ type: "presence.update", userId, status, clients });
+    },
+    typing(userId: string, active: boolean, sessionId = SESSION) {
+      publish({
+        type: "session.typing.update",
+        sessionId,
+        userId,
+        userName: personName(userId),
+        active,
+      });
+    },
+    // Someone else opens or leaves a session on another connection.
+    viewer(
+      userId: string,
+      active: boolean,
+      state: "active" | "idle" = "active",
+      sessionId = SESSION,
+    ) {
+      publish({
+        type: "session.presence.update",
+        sessionId,
+        viewer: { userId, userName: personName(userId), userImage: null },
+        active,
+        state,
+      });
+    },
     client(user = "owner") {
       api.connect({
         host: server.url.origin,
