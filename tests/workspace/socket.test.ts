@@ -50,6 +50,13 @@ const bob = input("From Bob", {
   status: "queued",
 });
 
+test("says it is Pi, so Leverage shows Pi on the person's face", async () => {
+  const f = fixture();
+  const socket = await f.client().socket();
+  await socket.connect();
+  expect(f.clients).toEqual(["pi"]);
+});
+
 test("reconnects with its replay cursor and drops repeated frames", async () => {
   const f = fixture();
   const api = f.client();
