@@ -115,7 +115,8 @@ export class WorkspaceSocket {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.search = new URLSearchParams({
       workspaceId: this.workspaceId,
-      client: "terminal",
+      // Teammates see Pi's mark on this person's face.
+      client: "pi",
     }).toString();
     return url;
   }

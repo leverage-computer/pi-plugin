@@ -228,6 +228,8 @@ export function workspaceFixture(extra?: Extra) {
       archivedAt: session.archivedAt ?? null,
     });
   };
+  // The client each socket said it was.
+  const clients: (string | null)[] = [];
   const server = Bun.serve<{ user: string }>({
     hostname: "127.0.0.1",
     port: 0,
@@ -237,6 +239,7 @@ export function workspaceFixture(extra?: Extra) {
       const user =
         request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
       if (path === "/ws") {
+        clients.push(url.searchParams.get("client"));
         if (server.upgrade(request, { data: { user } })) {
           return;
         }
@@ -696,6 +699,7 @@ export function workspaceFixture(extra?: Extra) {
     },
   });
   return {
+    clients,
     session,
     sessions,
     channels,
