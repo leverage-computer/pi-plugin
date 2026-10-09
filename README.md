@@ -6,17 +6,12 @@
 <a href="#get-started"><img src="https://img.shields.io/badge/Pi-0.99.1-3f3f46?labelColor=0a0a0a" alt="Pi 0.99.1"></a>
 <a href="#get-started"><img src="https://img.shields.io/badge/Node.js-%E2%89%A522.19-3f3f46?labelColor=0a0a0a" alt="Node.js 22.19 or newer"></a>
 
-[leverage.computer](https://leverage.computer) · [Get started](#get-started) ·
-[Features](#features) · [Commands](#commands) · [Settings](#settings)
-
-**Talk to your Leverage agents from Pi.** The agent runs on Leverage, and your
-team sees the same conversation in the web app.
+[Install](#install) ·
+[Features](#features) · [Commands](#commands) · [Settings](#settings) · [leverage.computer](https://leverage.computer)
 
 [![Setting up Leverage in Pi: install the plugin, sign in, and see your team's sessions](docs/media/00-setup.gif)](docs/media/00-setup.mp4)
 
-## Get started
-
-You need Node.js 22.19 or newer.
+## Install
 
 ```sh
 npm install -g @earendil-works/pi-coding-agent@0.99.1
