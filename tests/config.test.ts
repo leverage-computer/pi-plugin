@@ -1,11 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  forgetLogin,
+  loginHost,
   rememberedModel,
   rememberModel,
   resolveConnection,
+  saveLogin,
 } from "../src/config";
 
 const directories: string[] = [];
@@ -167,5 +177,91 @@ describe("Leverage connection settings", () => {
         { LEVERAGE_CONFIG_DIR: env.LEVERAGE_CONFIG_DIR },
       ),
     ).toThrow("Cannot read Leverage login settings");
+  });
+});
+
+describe("Pi's own sign-in", () => {
+  // A CLI login and a Pi login, each in its own scratch folder.
+  function both() {
+    const agent = mkdtempSync(join(tmpdir(), "pi-agent-"));
+    directories.push(agent);
+    return {
+      ...settings({
+        currentHost: "https://one.example",
+        hosts: {
+          "https://one.example": {
+            workspaceSlug: "alpha",
+            accessToken: "cli-access",
+            refreshToken: "cli-refresh",
+          },
+        },
+      }),
+      PI_CODING_AGENT_DIR: agent,
+    };
+  }
+  const login = {
+    host: "https://two.example",
+    workspace: "beta",
+    accessToken: "pi-access",
+    refreshToken: "pi-refresh",
+  };
+
+  test("comes before the CLI's, and only Pi's owner reads it", () => {
+    const env = both();
+    expect(resolveConnection({}, env).token).toBe("cli-access");
+    saveLogin(login, env);
+    const file = join(env.PI_CODING_AGENT_DIR, "leverage.json");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(resolveConnection({}, env)).toEqual({
+      host: "https://two.example",
+      workspace: "beta",
+      token: "pi-access",
+      refreshToken: "pi-refresh",
+    });
+    // The CLI's host still uses the CLI's login.
+    expect(resolveConnection({ host: "https://one.example" }, env).token).toBe(
+      "cli-access",
+    );
+  });
+
+  test("is used even when the CLI's settings are unreadable", () => {
+    const env = both();
+    saveLogin(login, env);
+    writeFileSync(join(env.LEVERAGE_CONFIG_DIR, "config.json"), "{broken");
+    expect(resolveConnection({}, env).token).toBe("pi-access");
+  });
+
+  test("tightens a file kept with a looser mode", () => {
+    const env = both();
+    const file = join(env.PI_CODING_AGENT_DIR, "leverage.json");
+    writeFileSync(file, "{}", { mode: 0o644 });
+    saveLogin(login, env);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  test("is forgotten on logout, and the CLI's login is used again", () => {
+    const env = both();
+    saveLogin(login, env);
+    expect(forgetLogin(env)).toEqual(login);
+    expect(existsSync(join(env.PI_CODING_AGENT_DIR, "leverage.json"))).toBe(
+      false,
+    );
+    expect(forgetLogin(env)).toBeUndefined();
+    expect(resolveConnection({}, env).token).toBe("cli-access");
+  });
+
+  test("signs in to the flag's host, then LEVERAGE_HOST's, then Leverage's", () => {
+    expect(loginHost(undefined, {})).toBe("https://app.leverage.computer");
+    expect(
+      loginHost(undefined, { LEVERAGE_HOST: "http://127.0.0.1:3452" }),
+    ).toBe("http://127.0.0.1:3452");
+    expect(
+      loginHost("https://flag.example", {
+        LEVERAGE_HOST: "http://127.0.0.1:3452",
+      }),
+    ).toBe("https://flag.example");
+    expect(() => loginHost("https://one.example/api", {})).toThrow(
+      "HTTP(S) origin",
+    );
   });
 });

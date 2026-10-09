@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -10,8 +11,22 @@ import {
   type InputEvent,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { api, sessionId } from "./api";
-import { rememberedModel, rememberModel, resolveConnection } from "./config";
+import {
+  api,
+  endSignIn,
+  type LoginWorkspace,
+  sessionId,
+  signedInWorkspaces,
+  signIn,
+} from "./api";
+import {
+  forgetLogin,
+  loginHost,
+  rememberedModel,
+  rememberModel,
+  resolveConnection,
+  saveLogin,
+} from "./config";
 import { chooseDrawer, clean, report, textDrawer } from "./drawers";
 import { createEntryComponent } from "./render";
 import {
@@ -80,6 +95,8 @@ const VIEW_COMMANDS = new Set([
   "status",
   "exit",
 ]);
+// These commands sign in and out, so they never need a connection first.
+const ACCESS_COMMANDS = new Set(["login", "logout"]);
 // Pi creates a new extension instance when it switches sessions.
 const composerDrafts = new Map<string, string>();
 let nextDraft: Partial<SessionDraft> | undefined;
@@ -129,6 +146,53 @@ async function localImages(
     );
   }
   return { text: rest.trim(), files };
+}
+
+// Opens a page in the browser. Where none opens, the notice has the link.
+function browse(link: string): void {
+  const opener =
+    process.env.BROWSER?.trim() ||
+    (process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? undefined
+        : "xdg-open");
+  if (!opener) {
+    return;
+  }
+  try {
+    spawn(opener, [link], { stdio: "ignore", detached: true })
+      .on("error", () => undefined)
+      .unref();
+  } catch {
+    // The notice already shows the link.
+  }
+}
+
+// The workspace named, the only one, or the one the person picks.
+async function chooseWorkspace(
+  ctx: ExtensionCommandContext,
+  workspaces: LoginWorkspace[],
+  named?: string,
+): Promise<LoginWorkspace | undefined> {
+  if (named) {
+    const found = workspaces.find(
+      (one) => one.slug === named || one.name === named,
+    );
+    if (!found) {
+      const yours = workspaces.map((one) => one.slug).join(", ");
+      throw new Error(`No workspace ${named}. Yours: ${yours}.`);
+    }
+    return found;
+  }
+  if (workspaces.length <= 1) {
+    return workspaces[0];
+  }
+  const picked = await ctx.ui.select(
+    "Leverage workspace",
+    workspaces.map((one) => `${one.name} (${one.slug})`),
+  );
+  return workspaces.find((one) => `${one.name} (${one.slug})` === picked);
 }
 
 type Interaction = "approvals" | "questions" | "model";
@@ -791,6 +855,61 @@ export default function leverage(pi: ExtensionAPI): void {
       }
       await ctx.newSession();
     },
+    // Signs Pi in through the browser, as leverage login does.
+    login: async (ctx, words) => {
+      const host = loginHost(flag("host"));
+      const login = await signIn(host, (code, link) => {
+        ctx.ui.notify(`Confirm ${code} in the browser: ${link}`, "info");
+        browse(link);
+      });
+      const workspaces = await signedInWorkspaces(host, login);
+      if (workspaces.length === 0) {
+        await endSignIn(host, login);
+        throw new Error("Your Leverage account has no workspace yet.");
+      }
+      const chosen = await chooseWorkspace(ctx, workspaces, words[0]).catch(
+        async (error: unknown) => {
+          await endSignIn(host, login);
+          throw error;
+        },
+      );
+      if (!chosen) {
+        await endSignIn(host, login);
+        return;
+      }
+      saveLogin({ host, workspace: chosen.slug, ...login });
+      // The next command connects with this sign-in.
+      disconnect();
+      ctx.ui.notify(
+        `Signed in to ${chosen.slug}. /leverage new starts a session.`,
+        "info",
+      );
+    },
+    // Forgets Pi's sign-in and ends it on Leverage.
+    logout: async (ctx) => {
+      const login = forgetLogin();
+      if (login) {
+        await endSignIn(login.host, login);
+      }
+      let cliSignedIn = false;
+      try {
+        resolveConnection({});
+        cliSignedIn = true;
+      } catch {
+        // Nothing else signs Pi in.
+      }
+      ctx.ui.notify(
+        cliSignedIn
+          ? "Signed out of Pi. The Leverage CLI keeps its own sign-in: leverage logout ends it."
+          : "Signed out.",
+        "info",
+      );
+      if (active) {
+        await ctx.newSession();
+      } else {
+        disconnect();
+      }
+    },
     settings: (ctx, words) =>
       editSettings(
         ctx,
@@ -1103,7 +1222,7 @@ export default function leverage(pi: ExtensionAPI): void {
   });
   pi.registerCommand("leverage", {
     description:
-      "Open Leverage: new, sessions, files, outputs, changes, approvals, skills, history, model, exit",
+      "Open Leverage: new, sessions, files, outputs, changes, approvals, skills, history, model, exit, login, logout",
     handler: async (args, ctx) => {
       const opening = generation;
       dialogCount++;
@@ -1112,7 +1231,7 @@ export default function leverage(pi: ExtensionAPI): void {
           .trim()
           .split(/\s+/)
           .filter(Boolean);
-        if (!VIEW_COMMANDS.has(action)) {
+        if (!VIEW_COMMANDS.has(action) && !ACCESS_COMMANDS.has(action)) {
           ensureApi();
         }
         const command = Object.hasOwn(commands, action)
@@ -1120,7 +1239,7 @@ export default function leverage(pi: ExtensionAPI): void {
           : undefined;
         if (!command) {
           throw new Error(
-            "Use /leverage sessions, new, open, history, files, outputs, changes, connectors, skills, stop, queue, approvals, questions, model, compact, rename, archive, restore, or exit.",
+            "Use /leverage sessions, new, open, history, files, outputs, changes, connectors, skills, stop, queue, approvals, questions, model, compact, rename, archive, restore, exit, login, or logout.",
           );
         }
         await command(ctx, words, opening);

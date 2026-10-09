@@ -24,12 +24,12 @@ import {
   invocationSchema,
   memberSchema,
   modelCatalogSchema,
-  type ProviderAvailability,
   type ProviderFamily,
   pendingApprovalsSchema,
   preferencesSchema,
   providerAvailabilitySchema,
   queueSchema,
+  runnableFamilies,
   type SessionDraft,
   type SessionInput,
   sessionCreateSchema,
@@ -80,14 +80,14 @@ export type Upload = {
 function chooseFamily(
   draft: SessionDraft,
   channel: Channel | undefined,
-  providers: ProviderAvailability,
+  runnable: Record<ProviderFamily, boolean>,
 ): Effect.Effect<ProviderFamily, InputError> {
   const family =
     draft.providerFamily ??
     channel?.defaultProviderFamily ??
-    (providers.claude_code ? "claude_code" : "codex");
+    (runnable.claude_code ? "claude_code" : "codex");
   return decode(
-    familySchema.refine((one) => providers[one]),
+    familySchema.refine((one) => runnable[one]),
     family,
   ).pipe(
     Effect.mapError(
@@ -717,19 +717,12 @@ export class WorkspaceClient {
 
   private validateDraft(draft: SessionDraft, signal: AbortSignal) {
     return Effect.gen({ self: this }, function* () {
-      const [providers, models, channels] = yield* Effect.all(
+      const [providers, channels] = yield* Effect.all(
         [
           Effect.tryPromise({
             try: () => this.providers(signal),
             catch: failure,
           }),
-          // The catalog only matters when the draft names a model or effort.
-          draft.model || draft.reasoningEffort
-            ? Effect.tryPromise({
-                try: () => this.models(signal),
-                catch: failure,
-              })
-            : Effect.succeed([] as HostedModel[]),
           draft.context.type === "channel"
             ? Effect.tryPromise({
                 try: () => this.channels(signal),
@@ -739,6 +732,15 @@ export class WorkspaceClient {
         ],
         { concurrency: "unbounded" },
       );
+      // The catalog matters when the draft names a model or effort, and when
+      // Leverage's own models may run the session.
+      const models =
+        draft.model || draft.reasoningEffort || providers.leverage?.enabled
+          ? yield* Effect.tryPromise({
+              try: () => this.models(signal),
+              catch: failure,
+            })
+          : [];
       const wanted =
         draft.context.type === "channel" ? draft.context.channelId : undefined;
       const channel = channels.find((one) => one.id === wanted);
@@ -747,7 +749,11 @@ export class WorkspaceClient {
           new InputError("The selected channel is no longer available."),
         );
       }
-      const family = yield* chooseFamily(draft, channel, providers);
+      const family = yield* chooseFamily(
+        draft,
+        channel,
+        runnableFamilies(providers, models),
+      );
       yield* checkModel(draft, family, models);
       draft.providerFamily = family;
     });

@@ -1,11 +1,9 @@
 # Leverage in Pi
 
-Talk to your Leverage agents from the terminal.
+Talk to your Leverage agents from Pi. The agent runs on Leverage, and your
+team sees the same conversation in the web app.
 
-You type in Pi. The agent runs on Leverage. Your team sees the same
-conversation in the web app.
-
-![Starting a session and getting an answer](docs/media/01-first-session.gif)
+[![Setting up Leverage in Pi: install the plugin, sign in, and see your team's sessions](docs/media/00-setup.gif)](docs/media/00-setup.mp4)
 
 ## Get started
 
@@ -13,91 +11,67 @@ You need Node.js 22.19 or newer.
 
 ```sh
 npm install -g @earendil-works/pi-coding-agent@0.99.1
-leverage login
 pi install git:github.com/leverage-computer/pi-plugin
 pi
 ```
 
-That's it. Pi opens as it always does. Leverage only shows up when you ask
-for it:
+In Pi, run `/leverage login`. Then `/leverage new` starts a session, and
+`/leverage` opens one your team started. `/leverage exit` goes back to plain
+Pi.
 
-- Type `/leverage new` to start a session.
-- Type `/leverage` to open one your team started.
-- Type `/leverage exit` to go back to plain Pi.
+## Features
 
-## How to use it
+### Start a session
 
-### Ask for something
+[![Starting a session and getting an answer](docs/media/01-first-session.gif)](docs/media/01-first-session.mp4)
 
-![Starting a session](docs/media/01-new-session.png)
+- `/leverage new`, then type what you need. Your first message starts the
+  session.
+- **F2** picks the model. **Ctrl+V** sends an image with your message.
+- Edits show as diffs. Checklists, helpers and background commands get their
+  own cards.
 
-- Type `/leverage new`, then type what you need and press **Enter**.
-- Your first message starts the session.
-- You'll see **Working** while the agent is busy.
-- Want a different model? Press **F2**. In an open session, it switches with
-  your next message. New sessions start with the model you used last.
-- Pasted an image with **Ctrl+V**? It goes to the agent with your message.
-- The agent's edits show as diffs, and its checklist, helpers and background
-  commands each get their own card, drawn the way Pi draws its own.
+### Open your team's sessions
 
-![The answer, with the agent's tool cards](docs/media/01-answer.png)
+[![Finding and opening a session](docs/media/02-sessions.gif)](docs/media/02-sessions.mp4)
 
-[Watch it in full](docs/media/01-first-session.mp4)
+- `/leverage`, or **F3** in a session, lists them. Type to filter, then
+  **Enter**.
+- Each message shows who wrote it. Anything you send shows up for everyone.
 
-### Open a session your team started
+[![Who is on the session](docs/media/05-people.gif)](docs/media/05-people.mp4)
 
-![Finding and opening a session](docs/media/02-sessions.gif)
+- Above the composer: who has the session open, who is typing, and whether
+  the owner is around. **F1** shows the full list.
 
-- Type `/leverage` to see all sessions. Already in one? Press **F3**.
-- Type a few letters to find one, then press **Enter**. Each session says
-  whether its owner is online.
-- You'll see who wrote each message.
-- Above the composer, you'll always see who else has the session open,
-  who is typing, and whether the owner is around. Press **F1** for the full
-  list.
-- Anything you send shows up for everyone. You count as online while you
-  type or send; a Pi left open goes away after a few quiet minutes, like
-  the other Leverage apps.
+### Approve commands
 
-![Who is on the session](docs/media/05-people.gif)
+[![Approving a command](docs/media/03-approvals.gif)](docs/media/03-approvals.mp4)
 
-[Watch it in full](docs/media/05-people.mp4)
-
-[Watch it in full](docs/media/02-sessions.mp4)
-
-### Say yes or no to a command
-
-![Approving a command](docs/media/03-approvals.gif)
-
-- Sometimes the agent asks before it runs something. The question opens on
-  its own, and a yellow line stays until someone answers.
-- Pick **Approve once** or **Deny**. You only see the choices you're allowed
-  to make. Press **F4** to open it again later.
-- A plan to review works the same way: approve it, or ask for changes.
-- Not sure? Press **Escape**. Nothing gets approved, and it won't ask again
-  until you press **F4**.
-
-[Watch it in full](docs/media/03-approvals.mp4)
+- The question opens on its own. Pick **Approve once** or **Deny**.
+- **Escape** approves nothing. **F4** opens the question again.
+- Plans to review work the same way.
 
 ### See what the agent made
 
-![Reading outputs and changes](docs/media/04-files.gif)
+[![Reading outputs and changes](docs/media/04-files.gif)](docs/media/04-files.mp4)
 
-- Type `/leverage outputs` to see the files the agent made. Press **Enter**
-  to read one, or **Tab** to save it in the folder you started Pi in.
-- Type `/leverage files` to look through all of the session's folders, or
-  to find a file by name.
-- Type `/leverage changes` to see what the agent changed, on which branch,
-  and its pull request.
+- `/leverage outputs`: the files the agent made. **Enter** reads one, **Tab**
+  saves it here.
+- `/leverage files`: all of the session's folders.
+- `/leverage changes`: what changed, on which branch, and its pull request.
 
-[Watch it in full](docs/media/04-files.mp4)
+### Good to know
 
-## Handy commands
+- Closing Pi doesn't stop the agent.
+- Pi can't run `!` shell commands in a session yet. Ask the agent instead.
 
-These keys work once you're in a Leverage session.
+## Commands
 
 | Type or press | What happens |
 | --- | --- |
+| `/leverage login` | Sign in |
+| `/leverage logout` | Sign out |
 | `/leverage new` | Start a new session |
 | `/leverage` | Find and open a session |
 | `/leverage exit` | Go back to plain Pi |
@@ -105,9 +79,9 @@ These keys work once you're in a Leverage session.
 | **F2** | Pick a model |
 | **F3** | Find and open a session |
 | **F4** | Review what the agent wants to run |
-| **Enter** while the agent works | Steer it: it reads your message after its current step |
-| **Alt+Enter** | Queue a follow-up for when the agent finishes |
-| **Alt+Q** | Take queued follow-ups back into the editor |
+| **Enter** while the agent works | Steer it after its current step |
+| **Alt+Enter** | Queue a follow-up |
+| **Alt+Q** | Take queued follow-ups back |
 | **Escape** | Stop the agent |
 | `/leverage rename <name>` | Rename the session |
 | `/leverage history` | Read older messages |
@@ -115,35 +89,28 @@ These keys work once you're in a Leverage session.
 | `/leverage archive` | Put the session away |
 | `/leverage retry` | Try again when a message didn't send |
 | `/leverage skills` | Pick a skill for your next message |
-| `/leverage outputs` | Files the agent made |
-| `/leverage files` | All of the session's folders |
-| `/leverage changes` | What changed, and the pull request |
 | `/leverage connectors` | The apps your workspace connects to |
 
-In the session list, press **Tab** to rename or archive a session without
-opening it.
+In the session list, **Tab** renames or archives a session.
 
-Good to know:
+## Access
 
-- Closing Pi doesn't stop the agent. It keeps working.
-- Pi can't run `!` shell commands in the session yet. Ask the agent to run them
-  instead.
+The plugin uses your Leverage CLI login, or its own in
+`~/.pi/agent/leverage.json`. Set it up with `/leverage login`;
+`/leverage logout` removes it.
 
 ## Settings
 
-Most people never need these. Pi connects to `https://app.leverage.computer`
-with your `leverage login`.
-
-| To change | Add this to `pi` |
+| To change | Use |
 | --- | --- |
-| The workspace | `--leverage-workspace <name>` |
-| Open a session as Pi starts | `--leverage-session <id>` |
+| The server | `LEVERAGE_HOST` |
+| The workspace | `pi --leverage-workspace <name>` |
+| The session Pi opens | `pi --leverage-session <id>` |
 
-To choose which channels Pi shows, open Leverage and go to **Settings →
-Integrations → What each app gets**. There you also choose if Pi lists
-standalone sessions and sessions other people share with you.
+Which channels Pi shows: Leverage **Settings → Integrations → What each app
+gets**.
 
-## For developers
+## Development
 
 You need Bun 1.4.2, Python 3 and macOS or Linux.
 

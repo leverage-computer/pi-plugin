@@ -262,6 +262,8 @@ export const modelSchema = z.object({
   legacy: z.boolean(),
   reasoningEfforts: z.array(z.string()),
   defaultReasoningEffort: z.string().nullable(),
+  // Who can pay for the model: "pool" for subscriptions, "leverage" for credits.
+  sources: z.array(z.string()).optional(),
 });
 
 export type HostedModel = z.infer<typeof modelSchema>;
@@ -271,9 +273,39 @@ export const modelCatalogSchema = z.object({ models: z.array(modelSchema) });
 export const providerAvailabilitySchema = z.object({
   claude_code: z.boolean(),
   codex: z.boolean(),
+  // Leverage's own models, paid with workspace credits. Older servers omit it.
+  leverage: z
+    .object({
+      enabled: z.boolean(),
+      subscriptionConnected: z.boolean(),
+      defaultSource: z.string(),
+    })
+    .optional(),
 });
 
 export type ProviderAvailability = z.infer<typeof providerAvailabilitySchema>;
+
+/**
+ * The families new work can run on the workspace's default source, as the
+ * web app decides. Leverage runs a family when its catalog has a model of it
+ * on credits. A Leverage default leaves the rest on subscriptions.
+ */
+export function runnableFamilies(
+  providers: ProviderAvailability,
+  models: HostedModel[],
+): Record<ProviderFamily, boolean> {
+  const leverageRuns = (family: ProviderFamily) =>
+    !!providers.leverage?.enabled &&
+    models.some(
+      (one) => one.family === family && !!one.sources?.includes("leverage"),
+    );
+  const runs = (family: ProviderFamily) =>
+    providers.leverage?.defaultSource === "leverage" &&
+    !(providers.leverage.subscriptionConnected && !leverageRuns(family))
+      ? leverageRuns(family)
+      : providers[family];
+  return { claude_code: runs("claude_code"), codex: runs("codex") };
+}
 
 export const uploadSchema = z.object({
   attachmentId: z.string(),
