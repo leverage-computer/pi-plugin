@@ -268,7 +268,7 @@ export class SessionClient {
     return this.run(
       this.refreshToken
         ? this.renew(previous.replace(/^Bearer /, ""))
-        : Effect.fail(new StateError("Sign in with leverage login again.")),
+        : Effect.fail(new StateError("Sign in with /leverage login again.")),
       signal,
     );
   }
@@ -514,3 +514,206 @@ export class SessionClient {
 
 /** The one connection this plugin holds. */
 export const api = new SessionClient();
+
+const deviceGrant = z.object({
+  device_code: z.string().min(1),
+  user_code: z.string().min(1),
+  expires_in: z.number().positive(),
+  interval: z.number().positive(),
+});
+
+const deviceTokens = z
+  .object({
+    access_token: z.string().min(1),
+    refresh_token: z.string().min(1),
+  })
+  .transform((body) => ({
+    accessToken: body.access_token,
+    refreshToken: body.refresh_token,
+  }));
+
+const workspaceList = z.array(
+  z
+    .object({
+      id: z.string(),
+      slug: z.string().min(1),
+      name: z.string().optional(),
+    })
+    .transform((one) => ({ ...one, name: one.name || one.slug })),
+);
+
+/** A device sign-in, as `leverage login` keeps it. */
+export type DeviceLogin = z.output<typeof deviceTokens>;
+export type LoginWorkspace = z.output<typeof workspaceList>[number];
+
+const EXPIRED = "The sign-in code expired. Run /leverage login again.";
+
+// One request to a sign-in route, before any connection exists.
+function signInRequest(
+  host: string,
+  path: string,
+  body?: unknown,
+  token?: string,
+): Effect.Effect<Response, Failure> {
+  return Effect.tryPromise({
+    try: (signal) =>
+      fetch(new URL(path, host), {
+        method: body === undefined ? "GET" : "POST",
+        signal,
+        redirect: "error",
+        headers: {
+          "content-type": "application/json",
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }),
+    catch: failure,
+  });
+}
+
+// Reads a sign-in reply, or fails with what Leverage said.
+function signInReply<T>(
+  host: string,
+  path: string,
+  response: Response,
+  schema: z.ZodType<T>,
+  action: string,
+): Effect.Effect<T, Failure> {
+  if (!response.ok) {
+    const method = path === "/api/workspaces" ? "GET" : "POST";
+    return Effect.flatMap(
+      requestError(response, method, new URL(path, host), action),
+      Effect.fail,
+    );
+  }
+  return Effect.tryPromise({
+    try: (): Promise<unknown> => response.json(),
+    catch: failure,
+  }).pipe(
+    Effect.flatMap((body) => decode(schema, body)),
+    Effect.mapError(
+      () => new ProtocolError(`Leverage returned an invalid ${action}`),
+    ),
+  );
+}
+
+/**
+ * Signs this device in through the browser, as `leverage login` does.
+ * `show` gets the code to confirm and the page to confirm it on.
+ */
+export function signIn(
+  host: string,
+  show: (code: string, link: string) => void,
+  signal?: AbortSignal,
+): Promise<DeviceLogin> {
+  const program = Effect.gen(function* () {
+    const started = yield* signInRequest(host, "/api/cli/auth/device", {
+      client_name: "Pi",
+    });
+    const grant = yield* signInReply(
+      host,
+      "/api/cli/auth/device",
+      started,
+      deviceGrant,
+      "sign-in code",
+    );
+    show(
+      grant.user_code,
+      `${host}/device?user_code=${encodeURIComponent(grant.user_code)}`,
+    );
+    let wait = grant.interval;
+    for (let waited = 0; waited < grant.expires_in; waited += wait) {
+      yield* Effect.sleep(Duration.seconds(wait));
+      // A code is good once, so each answer is read to its end.
+      const polled = yield* signInRequest(host, "/api/cli/auth/token", {
+        device_code: grant.device_code,
+      });
+      if (polled.status === 428) {
+        continue;
+      }
+      if (polled.status === 429) {
+        wait += 5;
+        continue;
+      }
+      if (polled.ok) {
+        return yield* signInReply(
+          host,
+          "/api/cli/auth/token",
+          polled,
+          deviceTokens,
+          "sign-in",
+        );
+      }
+      const reply = yield* Effect.tryPromise({
+        try: () => polled.text(),
+        catch: failure,
+      }).pipe(Effect.catch(() => Effect.succeed("")));
+      return yield* Effect.fail(
+        new StateError(
+          reply.includes("denied") ? "The sign-in was denied." : EXPIRED,
+        ),
+      );
+    }
+    return yield* Effect.fail(new StateError(EXPIRED));
+  });
+  return run(program, signal);
+}
+
+/** The workspaces a new sign-in can open. */
+export function signedInWorkspaces(
+  host: string,
+  login: DeviceLogin,
+  signal?: AbortSignal,
+): Promise<LoginWorkspace[]> {
+  return run(
+    signInRequest(host, "/api/workspaces", undefined, login.accessToken).pipe(
+      Effect.flatMap((response) =>
+        signInReply(
+          host,
+          "/api/workspaces",
+          response,
+          workspaceList,
+          "workspace list",
+        ),
+      ),
+    ),
+    signal,
+  );
+}
+
+/**
+ * Ends a device sign-in on Leverage. A stale access token is renewed once
+ * first. A sign-in Leverage no longer knows has already ended.
+ */
+export async function endSignIn(
+  host: string,
+  login: DeviceLogin,
+): Promise<void> {
+  const revoke = (token: string) =>
+    signInRequest(host, "/api/cli/auth/revoke", {}, token);
+  const program = revoke(login.accessToken).pipe(
+    Effect.flatMap((response) =>
+      response.status === 401
+        ? signInRequest(host, "/api/cli/auth/refresh", {
+            refresh_token: login.refreshToken,
+          }).pipe(
+            Effect.flatMap((renewed) =>
+              signInReply(
+                host,
+                "/api/cli/auth/refresh",
+                renewed,
+                accessToken,
+                "access token",
+              ),
+            ),
+            Effect.flatMap(revoke),
+          )
+        : Effect.succeed(response),
+    ),
+    Effect.timeoutOrElse({
+      duration: Duration.seconds(15),
+      orElse: () => Effect.fail(new Error("Leverage sign-out timed out")),
+    }),
+  );
+  await run(program).catch(() => undefined);
+}

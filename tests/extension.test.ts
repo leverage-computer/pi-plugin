@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -1048,5 +1055,106 @@ describe("Steering", () => {
       () => editor.getText() === "Then run the full suite\n\nand lint",
     );
     await eventually(() => !latest().includes("Follow-up:"));
+  });
+});
+
+describe("Signing in from Pi", () => {
+  test("/leverage login signs in through the browser, and /leverage logout ends it", async () => {
+    let polls = 0;
+    const f = leverage((request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/cli/auth/device") {
+        return Response.json({
+          device_code: "device-1",
+          user_code: "ABCD-EFGH",
+          expires_in: 30,
+          interval: 0.01,
+        });
+      }
+      if (path === "/api/cli/auth/token") {
+        return ++polls < 2
+          ? Response.json({ error: "authorization_pending" }, { status: 428 })
+          : Response.json({ access_token: "owner", refresh_token: "refresh" });
+      }
+      if (path === "/api/cli/auth/revoke") {
+        return Response.json({ ok: true });
+      }
+      return undefined;
+    });
+    // Only /leverage login signs this Pi in, and no browser opens.
+    const before = {
+      token: process.env.LEVERAGE_TOKEN,
+      agent: process.env.PI_CODING_AGENT_DIR,
+      browser: process.env.BROWSER,
+    };
+    delete process.env.LEVERAGE_TOKEN;
+    const agent = temporaryDirectory();
+    process.env.PI_CODING_AGENT_DIR = agent;
+    process.env.BROWSER = "true";
+    disposals.push(() => {
+      for (const [name, value] of [
+        ["PI_CODING_AGENT_DIR", before.agent],
+        ["BROWSER", before.browser],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    });
+    const manager = SessionManager.inMemory(temporaryDirectory());
+    const runner = await load({ manager });
+    const host = f.server.url.origin;
+    runner.setFlagValue("leverage-host", host);
+    const notices: string[] = [];
+    runner.setUIContext({
+      ...runner.getUIContext(),
+      notify: (message) => notices.push(message),
+    });
+    commandActions(runner, {
+      newSession: async (options) => {
+        await options?.setup?.(manager);
+        await runner.emit({ type: "session_start", reason: "new" });
+        return { cancelled: false };
+      },
+    });
+    await runner.emit({ type: "session_start", reason: "startup" });
+
+    await command(runner, "login");
+    expect(notices).toContain(
+      `Confirm ABCD-EFGH in the browser: ${host}/device?user_code=ABCD-EFGH`,
+    );
+    expect(notices).toContain(
+      "Signed in to test. /leverage new starts a session.",
+    );
+    const file = join(agent, "leverage.json");
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      host,
+      workspace: "test",
+      accessToken: "owner",
+      refreshToken: "refresh",
+    });
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+
+    // The next command connects with that sign-in, with no restart.
+    const signedIn = () =>
+      f.requests.filter(
+        (request) =>
+          request.user === "owner" && request.path === "/api/workspaces",
+      ).length;
+    expect(signedIn()).toBe(1);
+    await command(runner, "new");
+    await eventually(() => f.connections.size > 0 && signedIn() === 2);
+
+    await command(runner, "logout");
+    expect(existsSync(file)).toBe(false);
+    expect(
+      f.requests.some(
+        (request) =>
+          request.user === "owner" && request.path === "/api/cli/auth/revoke",
+      ),
+    ).toBe(true);
+    expect(notices).toContain("Signed out.");
   });
 });

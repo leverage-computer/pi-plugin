@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import assert from "node:assert/strict";
-import { ApiError, api, sameSessionId, sessionId } from "../src/api";
+import {
+  ApiError,
+  api,
+  endSignIn,
+  sameSessionId,
+  sessionId,
+  signedInWorkspaces,
+  signIn,
+} from "../src/api";
 
 const disposals: Array<() => void> = [];
 afterEach(() => {
@@ -222,5 +230,96 @@ describe("Session IDs", () => {
     expect(() => sessionId("../other")).toThrow("Invalid Leverage session");
     expect(sameSessionId("ses_task", "task")).toBe(true);
     expect(sameSessionId("task", "other")).toBe(false);
+  });
+});
+
+describe("Signing in through the browser", () => {
+  // A local Leverage that answers each poll from a script.
+  function server(polls: Response[]) {
+    const seen: string[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        const body = request.method === "POST" ? await request.text() : "";
+        seen.push(
+          `${request.method} ${path} ${request.headers.get("authorization") ?? ""} ${body}`.trim(),
+        );
+        if (path === "/api/cli/auth/device") {
+          return Response.json({
+            device_code: "device-1",
+            user_code: "ABCD-EFGH",
+            expires_in: 30,
+            interval: 0.01,
+          });
+        }
+        if (path === "/api/cli/auth/token") {
+          return (
+            polls.shift() ??
+            Response.json({ error: "expired" }, { status: 410 })
+          );
+        }
+        if (path === "/api/workspaces") {
+          return Response.json([{ id: "w-1", slug: "acme", name: "Acme" }]);
+        }
+        if (path === "/api/cli/auth/refresh") {
+          return Response.json({ access_token: "renewed" });
+        }
+        if (path === "/api/cli/auth/revoke") {
+          return request.headers.get("authorization") === "Bearer renewed"
+            ? Response.json({ ok: true })
+            : Response.json({ error: "invalid_token" }, { status: 401 });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    disposals.push(() => void server.stop(true));
+    return { host: server.url.origin, seen };
+  }
+
+  test("shows the code, waits for approval, and lists the workspaces", async () => {
+    const { host, seen } = server([
+      Response.json({ error: "authorization_pending" }, { status: 428 }),
+      Response.json({ error: "authorization_pending" }, { status: 428 }),
+      Response.json({ access_token: "access", refresh_token: "refresh" }),
+    ]);
+    const shown: string[] = [];
+    const login = await signIn(host, (code, link) => shown.push(code, link));
+    expect(login).toEqual({ accessToken: "access", refreshToken: "refresh" });
+    expect(shown).toEqual(["ABCD-EFGH", `${host}/device?user_code=ABCD-EFGH`]);
+    expect(seen[0]).toBe('POST /api/cli/auth/device  {"client_name":"Pi"}');
+    expect(
+      seen.filter((one) => one.startsWith("POST /api/cli/auth/token")),
+    ).toHaveLength(3);
+    expect(await signedInWorkspaces(host, login)).toEqual([
+      { id: "w-1", slug: "acme", name: "Acme" },
+    ]);
+    expect(seen.at(-1)).toBe("GET /api/workspaces Bearer access");
+  });
+
+  test("says when the sign-in is denied or expires", async () => {
+    const denied = server([
+      Response.json({ error: "denied" }, { status: 410 }),
+    ]);
+    await assert.rejects(
+      signIn(denied.host, () => {}),
+      /denied/,
+    );
+    const expired = server([]);
+    await assert.rejects(
+      signIn(expired.host, () => {}),
+      /expired/,
+    );
+  });
+
+  test("ends a sign-in on Leverage, renewing a stale access token first", async () => {
+    const { host, seen } = server([]);
+    await endSignIn(host, { accessToken: "stale", refreshToken: "refresh" });
+    expect(seen).toEqual([
+      "POST /api/cli/auth/revoke Bearer stale {}",
+      'POST /api/cli/auth/refresh  {"refresh_token":"refresh"}',
+      "POST /api/cli/auth/revoke Bearer renewed {}",
+    ]);
   });
 });

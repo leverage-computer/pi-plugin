@@ -1,6 +1,12 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import { z } from "zod";
 import type { LeverageConnection } from "./api";
@@ -23,7 +29,7 @@ const HOST_MESSAGE =
 const WORKSPACE_MESSAGE =
   "Set --leverage-workspace to your Leverage workspace slug.";
 
-const TOKEN_MESSAGE = "Sign in with leverage login, or set LEVERAGE_TOKEN.";
+const TOKEN_MESSAGE = "Sign in with /leverage login, or set LEVERAGE_TOKEN.";
 
 // Anything that is not a non-blank string reads as "unset".
 const optionalText = z
@@ -50,6 +56,26 @@ const configFile = z
     hosts: z.record(z.string(), profile.catch(noProfile)).catch({}),
   })
   .catch({ currentHost: undefined, hosts: {} });
+
+const emptyConfig: z.output<typeof configFile> = {
+  currentHost: undefined,
+  hosts: {},
+};
+
+// The sign-in `/leverage login` keeps for Pi alone.
+const piLogin = z.object({
+  host: optionalText,
+  workspace: optionalText,
+  accessToken: optionalText,
+  refreshToken: optionalText,
+});
+
+export type PiLogin = {
+  host: string;
+  workspace: string;
+  accessToken: string;
+  refreshToken: string;
+};
 
 const missingFile = z.object({ code: z.literal("ENOENT") });
 
@@ -105,6 +131,72 @@ function configDirectory(env: NodeJS.ProcessEnv): string {
   return (
     env.LEVERAGE_CONFIG_DIR ??
     join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "leverage")
+  );
+}
+
+// Where `/leverage login` keeps Pi's own sign-in, beside Pi's settings.
+function loginFile(env: NodeJS.ProcessEnv): string {
+  const agent = optionalText.parse(env.PI_CODING_AGENT_DIR);
+  return join(
+    agent?.replace(/^~(?=$|\/)/, homedir()) ?? join(homedir(), ".pi", "agent"),
+    "leverage.json",
+  );
+}
+
+function readLogin(env: NodeJS.ProcessEnv) {
+  try {
+    const saved = piLogin.parse(
+      JSON.parse(readFileSync(loginFile(env), "utf8")),
+    );
+    return saved.host ? saved : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Keeps a `/leverage login` sign-in where only this person reads it. */
+export function saveLogin(
+  login: PiLogin,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const file = loginFile(env);
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  writeFileSync(file, `${JSON.stringify(login, null, 2)}\n`, { mode: 0o600 });
+  // A file kept before keeps its mode, so set it again.
+  chmodSync(file, 0o600);
+}
+
+/** Forgets the `/leverage login` sign-in, and says what it was. */
+export function forgetLogin(
+  env: NodeJS.ProcessEnv = process.env,
+): PiLogin | undefined {
+  const saved = readLogin(env);
+  rmSync(loginFile(env), { force: true });
+  return saved?.host &&
+    saved.workspace &&
+    saved.accessToken &&
+    saved.refreshToken
+    ? {
+        host: saved.host,
+        workspace: saved.workspace,
+        accessToken: saved.accessToken,
+        refreshToken: saved.refreshToken,
+      }
+    : undefined;
+}
+
+/** The server `/leverage login` signs in to. */
+export function loginHost(
+  flag?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return runSync(
+    decode(
+      origin,
+      optionalText.parse(flag) ??
+        optionalText.parse(env.LEVERAGE_HOST) ??
+        DEFAULT_HOST,
+    ).pipe(Effect.mapError(configError)),
   );
 }
 
@@ -195,11 +287,30 @@ export function resolveConnection(
       optionalText.parse(flags.workspace) ??
       optionalText.parse(env.LEVERAGE_WORKSPACE);
     const tokenOverride = optionalText.parse(env.LEVERAGE_TOKEN);
-    // The login file is only read when a setting is missing.
-    const config =
-      configuredHost && configuredWorkspace && tokenOverride
-        ? { currentHost: undefined, hosts: {} }
+    // The login files are only read when a setting is missing.
+    const complete = configuredHost && configuredWorkspace && tokenOverride;
+    // Pi's own sign-in comes first. The CLI's is used without it.
+    const own = complete ? undefined : readLogin(env);
+    const cli = complete
+      ? emptyConfig
+      : own
+        ? yield* readConfig(env).pipe(
+            Effect.catch(() => Effect.succeed(emptyConfig)),
+          )
         : yield* readConfig(env);
+    const config = own?.host
+      ? {
+          currentHost: own.host,
+          hosts: {
+            ...cli.hosts,
+            [own.host]: {
+              workspaceSlug: own.workspace,
+              accessToken: own.accessToken,
+              refreshToken: own.refreshToken,
+            },
+          },
+        }
+      : cli;
     const host = yield* decode(
       origin,
       configuredHost ?? config.currentHost ?? DEFAULT_HOST,
