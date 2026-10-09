@@ -1,4 +1,4 @@
-# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/leverage-dark.svg"><img src="docs/media/leverage-light.svg" alt="Leverage Computer" height="32"></picture> Leverage in Pi
+# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/leverage-dark.svg"><img src="docs/media/leverage-light.svg" alt="Leverage Computer" height="24"></picture> Leverage in Pi
 
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-3f3f46?labelColor=0a0a0a" alt="MIT license"></a>
 <a href="https://github.com/leverage-computer/pi-plugin/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/leverage-computer/pi-plugin/ci.yml?branch=main&label=CI&labelColor=0a0a0a&color=3f3f46" alt="CI status"></a>
