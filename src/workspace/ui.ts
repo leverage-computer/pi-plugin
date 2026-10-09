@@ -3,12 +3,13 @@ import { api } from "../api";
 import { chooseDrawer, type DrawerItem, textDrawer } from "../drawers";
 import { appOf, memberName } from "../status";
 import { workspace } from "./api";
-import type {
-  Channel,
-  PresenceEntry,
-  SessionDraft,
-  WorkspaceMember,
-  WorkspaceSession,
+import {
+  type Channel,
+  type PresenceEntry,
+  runnableFamilies,
+  type SessionDraft,
+  type WorkspaceMember,
+  type WorkspaceSession,
 } from "./schema";
 
 const relative = new Intl.RelativeTimeFormat("en", {
@@ -136,8 +137,9 @@ export async function editDraft(
             : { type: "channel", channelId: picked };
       }
     } else if (action === "model") {
+      const runnable = runnableFamilies(providers, models);
       const usable = models.filter(
-        (one) => !one.legacy && providers[one.family],
+        (one) => !one.legacy && runnable[one.family],
       );
       const picked = await chooseDrawer(ctx, {
         title: "Leverage model",

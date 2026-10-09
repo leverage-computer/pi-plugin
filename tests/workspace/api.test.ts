@@ -124,6 +124,36 @@ test("revalidates removed channels, unavailable providers, and unsupported reaso
   expect(f.state.createCount).toBe(1);
 });
 
+test("a workspace with no subscription starts sessions on Leverage's own models", async () => {
+  const f = fixture((request) =>
+    new URL(request.url).pathname.endsWith("/provider-access/availability")
+      ? Response.json({
+          claude_code: false,
+          codex: false,
+          leverage: {
+            enabled: true,
+            subscriptionConnected: false,
+            defaultSource: "leverage",
+          },
+        })
+      : undefined,
+  );
+  const api = f.client();
+  const signal = new AbortController().signal;
+  const [model] = f.state.catalog;
+  if (!model) {
+    throw new Error("The fixture has no model");
+  }
+  // A catalog with no model on credits leaves nothing to run.
+  f.state.catalog = [{ ...model, sources: ["pool"] }];
+  await rejects(api.create(api.draft(), signal), /unavailable/);
+  expect(f.state.createCount).toBe(0);
+  f.state.catalog = [{ ...model, sources: ["pool", "leverage"] }];
+  const draft = api.draft();
+  expect(await api.create(draft, signal)).toBe(SESSION);
+  expect(draft.providerFamily).toBe(model.family);
+});
+
 test("a message resolves once Leverage stores it, and an unconfirmed one fails", async () => {
   const f = fixture();
   const api = f.client();
