@@ -1,6 +1,15 @@
-# Leverage in Pi
+# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/leverage-dark.svg"><img src="docs/media/leverage-light.svg" alt="Leverage Computer" height="32"></picture> Leverage in Pi
 
-Talk to your Leverage agents from Pi. The agent runs on Leverage, and your
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-3f3f46?labelColor=0a0a0a" alt="MIT license"></a>
+<a href="https://github.com/leverage-computer/pi-plugin/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/leverage-computer/pi-plugin/ci.yml?branch=main&label=CI&labelColor=0a0a0a&color=3f3f46" alt="CI status"></a>
+<a href="package.json"><img src="https://img.shields.io/github/package-json/v/leverage-computer/pi-plugin?label=Version&labelColor=0a0a0a&color=3f3f46" alt="Plugin version"></a>
+<a href="#get-started"><img src="https://img.shields.io/badge/Pi-0.99.1-3f3f46?labelColor=0a0a0a" alt="Pi 0.99.1"></a>
+<a href="#get-started"><img src="https://img.shields.io/badge/Node.js-%E2%89%A522.19-3f3f46?labelColor=0a0a0a" alt="Node.js 22.19 or newer"></a>
+
+[leverage.computer](https://leverage.computer) · [Get started](#get-started) ·
+[Features](#features) · [Commands](#commands) · [Settings](#settings)
+
+**Talk to your Leverage agents from Pi.** The agent runs on Leverage, and your
 team sees the same conversation in the web app.
 
 [![Setting up Leverage in Pi: install the plugin, sign in, and see your team's sessions](docs/media/00-setup.gif)](docs/media/00-setup.mp4)
@@ -15,9 +24,12 @@ pi install git:github.com/leverage-computer/pi-plugin
 pi
 ```
 
-In Pi, run `/leverage login`. Then `/leverage new` starts a session, and
-`/leverage` opens one your team started. `/leverage exit` goes back to plain
-Pi.
+Then, in Pi:
+
+- `/leverage login`: sign in.
+- `/leverage new`: start a session.
+- `/leverage`: open one your team started.
+- `/leverage exit`: go back to plain Pi.
 
 ## Features
 
@@ -95,9 +107,9 @@ In the session list, **Tab** renames or archives a session.
 
 ## Access
 
-The plugin uses your Leverage CLI login, or its own in
-`~/.pi/agent/leverage.json`. Set it up with `/leverage login`;
-`/leverage logout` removes it.
+- The plugin uses your Leverage CLI login, or its own in
+  `~/.pi/agent/leverage.json`.
+- `/leverage login` sets it up. `/leverage logout` removes it.
 
 ## Settings
 
