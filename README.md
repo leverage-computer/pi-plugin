@@ -6,7 +6,7 @@
 <a href="#get-started"><img src="https://img.shields.io/badge/Pi-0.99.1-3f3f46?labelColor=0a0a0a" alt="Pi 0.99.1"></a>
 <a href="#get-started"><img src="https://img.shields.io/badge/Node.js-%E2%89%A522.19-3f3f46?labelColor=0a0a0a" alt="Node.js 22.19 or newer"></a>
 
-[Features](#features) · [Recordings](#recordings) · [Install](#install) ·
+[Features](#features) · [Install](#install) · [Recordings](#recordings) · 
 [Commands](#commands) · [Settings](#settings) · [leverage.computer](https://leverage.computer)
 
 [![Setting up Leverage in Pi: install the plugin, sign in, and see your team's sessions](docs/media/00-setup.gif)](docs/media/00-setup.mp4)
@@ -22,6 +22,21 @@
   current step.
 - [**Governance**](#governance): the agent asks before it runs a command. Pick
   **Approve once** or **Deny**.
+
+## Install
+
+```sh
+npm install -g @earendil-works/pi-coding-agent@0.99.1
+pi install git:github.com/leverage-computer/pi-plugin
+pi
+```
+
+Then, in Pi:
+
+- `/leverage login`: sign in.
+- `/leverage new`: start a session.
+- `/leverage`: open one your team started.
+- `/leverage exit`: go back to plain Pi.
 
 ## Recordings
 
@@ -79,21 +94,6 @@
 
 - Closing Pi doesn't stop the agent.
 - Pi can't run `!` shell commands in a session yet. Ask the agent instead.
-
-## Install
-
-```sh
-npm install -g @earendil-works/pi-coding-agent@0.99.1
-pi install git:github.com/leverage-computer/pi-plugin
-pi
-```
-
-Then, in Pi:
-
-- `/leverage login`: sign in.
-- `/leverage new`: start a session.
-- `/leverage`: open one your team started.
-- `/leverage exit`: go back to plain Pi.
 
 ## Commands
 
