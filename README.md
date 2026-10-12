@@ -6,10 +6,79 @@
 <a href="#get-started"><img src="https://img.shields.io/badge/Pi-0.99.1-3f3f46?labelColor=0a0a0a" alt="Pi 0.99.1"></a>
 <a href="#get-started"><img src="https://img.shields.io/badge/Node.js-%E2%89%A522.19-3f3f46?labelColor=0a0a0a" alt="Node.js 22.19 or newer"></a>
 
-[Install](#install) ·
-[Features](#features) · [Commands](#commands) · [Settings](#settings) · [leverage.computer](https://leverage.computer)
+[Features](#features) · [Recordings](#recordings) · [Install](#install) ·
+[Commands](#commands) · [Settings](#settings) · [leverage.computer](https://leverage.computer)
 
 [![Setting up Leverage in Pi: install the plugin, sign in, and see your team's sessions](docs/media/00-setup.gif)](docs/media/00-setup.mp4)
+
+## Features
+
+- [**Multiplayer harness**](#multiplayer-harness): who has the session open,
+  who is typing, and whether the owner is around. Each message shows who wrote
+  it.
+- [**Company computer**](#company-computer): the session runs in Leverage, so
+  closing Pi doesn't stop the agent.
+- [**Steering**](#steering): **Enter** while the agent works steers it after its
+  current step.
+- [**Governance**](#governance): the agent asks before it runs a command. Pick
+  **Approve once** or **Deny**.
+
+## Recordings
+
+### Multiplayer harness
+
+[![Who is on the session](docs/media/05-people.gif)](docs/media/05-people.mp4)
+
+- Above the composer: who has the session open, who is typing, and whether
+  the owner is around. **F1** shows the full list.
+
+### Company computer
+
+[![Starting a session and getting an answer](docs/media/01-first-session.gif)](docs/media/01-first-session.mp4)
+
+- `/leverage new`, then type what you need. Your first message starts the
+  session.
+- **F2** picks the model. **Ctrl+V** sends an image with your message.
+- Edits show as diffs. Checklists, helpers and background commands get their
+  own cards.
+
+### Steering
+
+[![Typing while the agent works: it skips the e2e tests and runs the type check instead](docs/media/06-steering.gif)](docs/media/06-steering.mp4)
+
+- **Enter** while the agent works steers it after its current step.
+- **Alt+Enter** queues a follow-up instead. **Alt+Q** takes queued follow-ups
+  back.
+
+### Governance
+
+[![Approving a command](docs/media/03-approvals.gif)](docs/media/03-approvals.mp4)
+
+- The question opens on its own. Pick **Approve once** or **Deny**.
+- **Escape** approves nothing. **F4** opens the question again.
+- Plans to review work the same way.
+
+### Open your team's sessions
+
+[![Finding and opening a session](docs/media/02-sessions.gif)](docs/media/02-sessions.mp4)
+
+- `/leverage`, or **F3** in a session, lists them. Type to filter, then
+  **Enter**.
+- Each message shows who wrote it. Anything you send shows up for everyone.
+
+### See what the agent made
+
+[![Reading outputs and changes](docs/media/04-files.gif)](docs/media/04-files.mp4)
+
+- `/leverage outputs`: the files the agent made. **Enter** reads one, **Tab**
+  saves it here.
+- `/leverage files`: all of the session's folders.
+- `/leverage changes`: what changed, on which branch, and its pull request.
+
+### Good to know
+
+- Closing Pi doesn't stop the agent.
+- Pi can't run `!` shell commands in a session yet. Ask the agent instead.
 
 ## Install
 
@@ -25,53 +94,6 @@ Then, in Pi:
 - `/leverage new`: start a session.
 - `/leverage`: open one your team started.
 - `/leverage exit`: go back to plain Pi.
-
-## Features
-
-### Start a session
-
-[![Starting a session and getting an answer](docs/media/01-first-session.gif)](docs/media/01-first-session.mp4)
-
-- `/leverage new`, then type what you need. Your first message starts the
-  session.
-- **F2** picks the model. **Ctrl+V** sends an image with your message.
-- Edits show as diffs. Checklists, helpers and background commands get their
-  own cards.
-
-### Open your team's sessions
-
-[![Finding and opening a session](docs/media/02-sessions.gif)](docs/media/02-sessions.mp4)
-
-- `/leverage`, or **F3** in a session, lists them. Type to filter, then
-  **Enter**.
-- Each message shows who wrote it. Anything you send shows up for everyone.
-
-[![Who is on the session](docs/media/05-people.gif)](docs/media/05-people.mp4)
-
-- Above the composer: who has the session open, who is typing, and whether
-  the owner is around. **F1** shows the full list.
-
-### Approve commands
-
-[![Approving a command](docs/media/03-approvals.gif)](docs/media/03-approvals.mp4)
-
-- The question opens on its own. Pick **Approve once** or **Deny**.
-- **Escape** approves nothing. **F4** opens the question again.
-- Plans to review work the same way.
-
-### See what the agent made
-
-[![Reading outputs and changes](docs/media/04-files.gif)](docs/media/04-files.mp4)
-
-- `/leverage outputs`: the files the agent made. **Enter** reads one, **Tab**
-  saves it here.
-- `/leverage files`: all of the session's folders.
-- `/leverage changes`: what changed, on which branch, and its pull request.
-
-### Good to know
-
-- Closing Pi doesn't stop the agent.
-- Pi can't run `!` shell commands in a session yet. Ask the agent instead.
 
 ## Commands
 
