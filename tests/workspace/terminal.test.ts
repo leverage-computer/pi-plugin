@@ -165,18 +165,20 @@ test("the lines above the composer take the new colors when the theme changes", 
   expect(color(from)).not.toBe(light);
 }, 45000);
 
-test("narrow Pi terminal sets the channel with F1 and the model with F2, keeping the draft and creating nothing", async () => {
+test("narrow Pi terminal sets the channel with F1 and the model with Pi's own model keys, keeping the draft and creating nothing", async () => {
   const ui = await terminal(64);
   await ui.key("Keep this draft /tmp/attachment.png");
   await ui.key("\x1bOP");
   await ui.wait("Session context");
   await ui.key("general\r");
   await ui.wait("#general · Default model");
-  await ui.key("\x1bOQ");
-  await ui.wait("Leverage model");
+  // Pi's model selector lists Leverage's models, and its thinking key picks
+  // a reasoning effort the model has.
+  await ui.key("\x0c");
+  await ui.wait("Hosted model");
   await ui.key("Hosted\r");
-  await ui.wait("Reasoning effort");
-  await ui.key("high\r");
+  await ui.wait("#general · hosted-model");
+  await ui.key("\x1b[Z");
   await ui.wait("#general · hosted-model / high");
   // Typing redraws the composer line, which shows the kept draft.
   await ui.key("!");

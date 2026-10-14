@@ -29,7 +29,6 @@ import {
   entryData,
   messageOf,
   type SessionView,
-  stepsOf,
   userText,
   waiting,
 } from "./workspace/view";
@@ -46,6 +45,36 @@ type ToolDefinition = ConstructorParameters<typeof ToolExecutionComponent>[4];
 
 function firstLine(value: string): string {
   return value.trim().split("\n")[0]?.trim() ?? "";
+}
+
+// Pi's subagent card lists this many of the latest items until tools are expanded.
+const COLLAPSED_ITEMS = 10;
+
+/** One line of a sub-agent's work: something it wrote, or a tool it called. */
+type AgentItem = { text: string } | { call: string };
+
+// A sub-agent's conversation as its call's card lists it, as Pi's subagent
+// card lists a child's messages.
+function agentItems(entries: readonly EntryRecord[]): AgentItem[] {
+  return entries.flatMap((entry) => {
+    const message = messageOf(entry);
+    if (message?.role !== "assistant") {
+      return [];
+    }
+    const items = message.content.flatMap((block): AgentItem[] =>
+      block.type === "text" && block.text
+        ? [{ text: block.text }]
+        : block.type === "toolCall"
+          ? [{ call: toolTitleText(block.name, block.arguments) }]
+          : [],
+    );
+    if (message.stopReason === "error") {
+      items.push({
+        text: `Error: ${message.errorMessage ?? "The step failed"}`,
+      });
+    }
+    return items;
+  });
 }
 
 // Tool results arrive as JSON text.
@@ -79,6 +108,9 @@ export interface Shown {
   result?: EntryRecord;
   // The call's live output while it runs.
   slot?: ToolSlot;
+  // The conversation of the sub-agent the call started, found through the
+  // call's details.
+  conversation?: readonly EntryRecord[];
   members: readonly WorkspaceMember[];
   viewerId?: string;
   // Attached images already read from Leverage, by address.
@@ -96,6 +128,8 @@ const DELIVERY: Record<string, [string, ThemeColor]> = {
   withdrawn: ["Withdrawn", "muted"],
   cancelled: ["Cancelled", "muted"],
   unknown: ["Delivery unknown", "warning"],
+  // A queued message that joins the running turn, as Pi labels its steers.
+  steering: ["Steering", "warning"],
 };
 
 // Apps a person can send a message from. Leverage's own clients get no label.
@@ -160,10 +194,7 @@ export function entryText(
           case "thinking":
             return `Thinking\n${block.thinking}`;
           case "toolCall":
-            return [
-              toolTitleText(block.name, block.arguments),
-              ...stepsOf(data).map((step) => `↳ ${step}`),
-            ].join("\n");
+            return toolTitleText(block.name, block.arguments);
         }
       });
       if (message.stopReason === "error") {
@@ -348,24 +379,42 @@ export function toolRenderers(name: string, expanded: boolean): ToolRenderers {
     renderResult(result, options, theme, context) {
       const card = toolCard(name, context.args);
       const details = (result.details ?? {}) as {
-        steps?: string[];
+        items?: AgentItem[];
         background?: boolean;
         isError?: boolean;
       };
       const box = new Container();
-      // A sub-agent's latest steps, or all of them when expanded.
-      if (details.steps?.length) {
-        const shown = options.expanded
-          ? details.steps
-          : details.steps.slice(-4);
-        const hidden = details.steps.length - shown.length;
+      // A sub-agent's latest work, or all of it when expanded, as Pi's
+      // subagent card shows a child's messages.
+      if (details.items?.length) {
+        const { expanded } = options;
+        const shown = expanded
+          ? details.items
+          : details.items.slice(-COLLAPSED_ITEMS);
+        const hidden = details.items.length - shown.length;
         box.addChild(
           new Text(
             [
               ...(hidden
-                ? [theme.fg("muted", `… ${hidden} earlier steps`)]
+                ? [theme.fg("muted", `... ${hidden} earlier items`)]
                 : []),
-              ...shown.map((step) => theme.fg("muted", clean(`↳ ${step}`))),
+              ...shown.map((item) =>
+                "call" in item
+                  ? `${theme.fg("muted", "→ ")}${clean(item.call)}`
+                  : theme.fg(
+                      "toolOutput",
+                      clean(
+                        expanded
+                          ? item.text
+                          : item.text.split("\n").slice(0, 3).join("\n"),
+                      ),
+                    ),
+              ),
+              ...(hidden
+                ? [
+                    `${theme.fg("muted", "(")}${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`,
+                  ]
+                : []),
             ].join("\n"),
             0,
             0,
@@ -443,7 +492,10 @@ function person(theme: Theme, shown: Shown): Component {
   const card = new Container();
   const author = clean(authorOf(data, members, viewerId) ?? "User");
   const own = author.endsWith(" (you)");
-  const [state, tone] = DELIVERY[data.status ?? ""] ?? [];
+  const [state, tone] =
+    DELIVERY[
+      data.steer && data.status === "queued" ? "steering" : (data.status ?? "")
+    ] ?? [];
   const app = SENT_FROM.get(data.harness ?? "");
   card.addChild(
     new Text(
@@ -497,6 +549,7 @@ export function createEntryComponent(
     a?.entry === b.entry &&
     a.result === b.result &&
     a.slot === b.slot &&
+    a.conversation === b.conversation &&
     a.members === b.members &&
     a.images === b.images;
 
@@ -575,8 +628,8 @@ export function createEntryComponent(
       assistant.updateContent(message, message.stopReason === "pending");
     }
     if (tool) {
-      const data = entryData(shown.entry);
-      const steps = stepsOf(data);
+      const items = shown.conversation ? agentItems(shown.conversation) : [];
+      const work = items.length ? { items } : {};
       const resultMessage = shown.result ? messageOf(shown.result) : undefined;
       if (resultMessage?.role === "toolResult") {
         const background = entryData(shown.result!).background;
@@ -584,7 +637,7 @@ export function createEntryComponent(
           {
             content: resultMessage.content,
             details: {
-              ...(steps.length ? { steps } : {}),
+              ...work,
               ...(background ? { background } : {}),
               isError: resultMessage.isError,
             },
@@ -594,20 +647,20 @@ export function createEntryComponent(
         );
       } else if (shown.slot) {
         tool.markExecutionStarted();
-        if (shown.slot.output || steps.length) {
+        if (shown.slot.output || items.length) {
           tool.updateResult(
             {
               content: [{ type: "text", text: shown.slot.output ?? "" }],
-              details: { ...(steps.length ? { steps } : {}), isError: false },
+              details: { ...work, isError: false },
               isError: false,
             },
             true,
           );
         }
-      } else if (steps.length) {
+      } else if (items.length) {
         tool.markExecutionStarted();
         tool.updateResult(
-          { content: [], details: { steps, isError: false }, isError: false },
+          { content: [], details: { items, isError: false }, isError: false },
           true,
         );
       }

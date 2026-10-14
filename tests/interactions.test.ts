@@ -4,11 +4,10 @@ import type {
   ExtensionContext,
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
-import { type ModelChoice, PendingInteractions } from "../src/interactions";
+import { PendingInteractions } from "../src/interactions";
 import { SessionReplica } from "../src/workspace/view";
 import {
   eventually,
-  hostedModel,
   input,
   invocation,
   MEMBER,
@@ -41,7 +40,6 @@ async function setup(
     ui?: Partial<ExtensionUIContext>;
     user?: string;
     prepare?: (f: Fixture) => void;
-    chooseModel?: (choice: ModelChoice) => void;
   } = {},
 ) {
   const f = workspaceFixture();
@@ -71,7 +69,6 @@ async function setup(
     shared,
     controller.signal,
     () => shared.doc.canWrite && !shared.doc.revoked,
-    options.chooseModel,
   );
   return {
     f,
@@ -504,58 +501,13 @@ describe("questions", () => {
     ]);
   });
 
-  test("viewers cannot open questions or the model", async () => {
+  test("viewers cannot open questions", async () => {
     const { pending } = await setup({
       user: MEMBER,
       prepare: (f) => {
         f.session.visibility = "workspace";
       },
     });
-    for (const kind of ["questions", "model"] as const) {
-      await rejects(pending.show(kind), /read-only/);
-    }
-  });
-});
-
-describe("session model", () => {
-  test("the model choice stays local until the next message", async () => {
-    const choices: ModelChoice[] = [];
-    const lists: string[][] = [];
-    const { f, pending, notifications, actions } = await setup({
-      prepare: (f) => {
-        f.state.catalog = [
-          hostedModel,
-          { ...hostedModel, id: "older", label: "Older model", legacy: true },
-          { ...hostedModel, id: "codex", label: "Codex", family: "codex" },
-          {
-            ...hostedModel,
-            id: "fast",
-            label: "Fast model",
-            reasoningEfforts: [],
-            defaultReasoningEffort: null,
-          },
-        ];
-      },
-      chooseModel: (choice) => choices.push(choice),
-      ui: {
-        select: async (title, options) => {
-          lists.push(options);
-          return title === "Reasoning effort" ? "high" : options[0];
-        },
-      },
-    });
-    await pending.show("model");
-    expect(lists).toEqual([
-      ["Hosted model (current)", "Fast model"],
-      ["low (default)", "high"],
-    ]);
-    expect(choices).toEqual([
-      { model: "hosted-model", reasoningEffort: "high" },
-    ]);
-    expect(notifications).toEqual([
-      "Hosted model (high) is used from your next message.",
-    ]);
-    expect(f.requests.filter((one) => one.method !== "GET")).toEqual([]);
-    expect(actions()).toEqual([]);
+    await rejects(pending.show("questions"), /read-only/);
   });
 });

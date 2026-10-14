@@ -10,7 +10,12 @@ import {
   transcriptEventSchema,
   type WorkspaceMember,
 } from "../src/workspace/schema";
-import { EntryFold, entryData, messageOf } from "../src/workspace/view";
+import {
+  conversationOf,
+  EntryFold,
+  entryData,
+  messageOf,
+} from "../src/workspace/view";
 import { input, SESSION } from "./workspace/fixture";
 
 type Entry = ReturnType<EntryFold["current"]>[number];
@@ -50,6 +55,8 @@ function fold(limits?: ConstructorParameters<typeof EntryFold>[2]) {
     delta: (delta: TranscriptDelta) => entries.delta(delta, live),
     messages: (inputs: Parameters<EntryFold["messages"]>[0]) =>
       entries.messages(inputs),
+    // A sub-agent's conversation, by the ID its call's details name.
+    subagent: (id: number) => entries.subagent(id),
     // The entries Pi marks: tool results show inside their call.
     entries: () =>
       entries.current().filter((entry) => entry.kind !== "pi.tool-result"),
@@ -72,10 +79,19 @@ function fold(limits?: ConstructorParameters<typeof EntryFold>[2]) {
       const slot = call
         ? live.tools?.find((one) => one.callId === call.id)
         : undefined;
+      // A sub-agent's call names its conversation, as the session view finds it.
+      const answer = result ? messageOf(result) : undefined;
+      const agent =
+        conversationOf(
+          answer?.role === "toolResult" ? answer.details : undefined,
+        ) ?? conversationOf(slot?.details);
+      const conversation =
+        agent === undefined ? undefined : entries.subagent(agent)?.current();
       return {
         entry,
         ...(result ? { result } : {}),
         ...(slot ? { slot } : {}),
+        ...(conversation ? { conversation: [...conversation] } : {}),
         members: people.members ?? [],
         ...(people.viewerId ? { viewerId: people.viewerId } : {}),
         images: people.images ?? new Map(),
@@ -673,8 +689,8 @@ describe("Session view entries", () => {
     const [task, background, compaction] = f.entries();
     expect(f.entries()).toHaveLength(3);
     expect(shown(f.shown(task!))).toContain("Task Find flaky tests · Explore");
-    expect(shown(f.shown(task!))).toContain("↳ Grep sleep(");
-    expect(shown(f.shown(task!))).toContain("↳ Found one flaky test");
+    expect(shown(f.shown(task!))).toContain("→ Grep sleep(");
+    expect(shown(f.shown(task!))).toContain("Found one flaky test");
     // The background command stays a live slot after its result.
     expect(f.live.tools?.map((slot) => slot.callId)).toEqual(["toolu_bg"]);
     expect(shown(f.shown(background!))).toContain("running in the background");
@@ -700,6 +716,136 @@ describe("Session view entries", () => {
     expect(entries.map((one) => f.text(one)).join("\n")).not.toContain(
       "Compacting",
     );
+  });
+
+  test("a sub-agent works in a child conversation that its call's details name", () => {
+    const f = fold();
+    const text = (entries: readonly Entry[] | undefined) =>
+      (entries ?? []).map((entry) => f.text(entry)).join("\n");
+    f.apply([
+      row("tool_call", {
+        toolUseId: "toolu_task",
+        name: "Task",
+        input: { description: "Find flaky tests", subagent_type: "Explore" },
+      }),
+      row("task", {
+        taskId: "task_1",
+        taskKind: "agent",
+        phase: "started",
+        toolUseId: "toolu_task",
+      }),
+    ]);
+    const [card] = f.entries();
+    f.apply([
+      row("tool_call", {
+        toolUseId: "toolu_grep",
+        name: "Grep",
+        input: { pattern: "sleep(" },
+        parentToolUseId: "toolu_task",
+      }),
+    ]);
+    // The running call names the child in its details, as a Pi Durable
+    // subagent tool does with api.details().
+    expect(f.live.tools).toEqual([
+      {
+        callId: "toolu_task",
+        name: "Task",
+        status: "running",
+        details: { conversationId: 1 },
+      },
+    ]);
+    const child = f.subagent(1);
+    expect(Number(child?.conversation)).toBe(1);
+    // The child's running tool is a slot of its own live document.
+    expect(child?.live.tools).toEqual([
+      { callId: "toolu_grep", name: "Grep", status: "running" },
+    ]);
+    f.delta({
+      kind: "text",
+      streamId: "child_stream",
+      rowId: "child_row",
+      delta: "Reading the suite",
+      offset: 0,
+      delegatedTaskId: "task_1",
+    });
+    f.apply([
+      row("tool_result", {
+        toolUseId: "toolu_grep",
+        content: "tests/cart.test.ts:12",
+        parentToolUseId: "toolu_task",
+      }),
+      // A sub-agent of the sub-agent works in a conversation of its own too.
+      row("tool_call", {
+        toolUseId: "toolu_inner",
+        name: "Task",
+        input: { description: "Check the cart test" },
+        parentToolUseId: "toolu_task",
+      }),
+      row("text", {
+        content: "The cart test sleeps",
+        eventId: "inner_text",
+        finalized: true,
+        parentToolUseId: "toolu_inner",
+      }),
+    ]);
+    expect(text(child?.current())).toContain("Reading the suite");
+    expect(text(child?.current())).toContain("tests/cart.test.ts:12");
+    expect(child?.live.tools).toEqual([
+      {
+        callId: "toolu_inner",
+        name: "Task",
+        status: "running",
+        details: { conversationId: 2 },
+      },
+    ]);
+    expect(text(f.subagent(2)?.current())).toContain("The cart test sleeps");
+    // The session's own entries never change for a child's rows.
+    expect(f.entries()).toEqual([card!]);
+    expect(f.entries()[0]).toBe(card!);
+    expect(text(f.all())).not.toContain("tests/cart.test.ts:12");
+    // The card lists the child's work, as Pi's subagent card does.
+    const drawn = shown(f.shown(card!));
+    expect(drawn).toContain("→ Grep sleep(");
+    expect(drawn).toContain("Reading the suite");
+    expect(drawn).toContain("→ Task Check the cart test");
+    expect(drawn).not.toContain("The cart test sleeps");
+    // The result keeps the running details, so the card still finds the child.
+    f.apply([row("tool_result", { toolUseId: "toolu_task", content: "Done" })]);
+    const result = messageOf(f.all().at(-1)!);
+    expect(result?.role === "toolResult" && result.details).toEqual({
+      conversationId: 1,
+    });
+    expect(f.live.tools).toEqual([]);
+    expect(shown(f.shown(card!))).toContain("→ Grep sleep(");
+  });
+
+  test("a sub-agent's card shows its latest ten items until tools are expanded", () => {
+    const f = fold();
+    f.apply([
+      row("tool_call", {
+        toolUseId: "toolu_task",
+        name: "Task",
+        input: { description: "Read every file" },
+      }),
+      ...Array.from({ length: 12 }, (_, index) =>
+        row("tool_call", {
+          toolUseId: `toolu_read_${index + 1}`,
+          name: "Read",
+          input: { file_path: `file-${index + 1}.ts` },
+          parentToolUseId: "toolu_task",
+        }),
+      ),
+    ]);
+    const [card] = f.entries();
+    const collapsed = shown(f.shown(card!));
+    expect(collapsed).toContain("... 2 earlier items");
+    expect(collapsed).toContain("to expand");
+    expect(collapsed).not.toContain("file-2.ts");
+    expect(collapsed).toContain("file-3.ts");
+    expect(collapsed).toContain("file-12.ts");
+    const expanded = shown(f.shown(card!), true);
+    expect(expanded).not.toContain("earlier items");
+    expect(expanded).toContain("file-1.ts");
   });
 
   test("a failed tool shows its error and a result without text shows its value", () => {

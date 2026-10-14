@@ -70,7 +70,7 @@ export async function editDraft(
       await textDrawer(ctx, {
         title: "Session setup is waiting",
         read: () =>
-          "The empty session already exists. Retry the original prompt to finish its setup. Start a new session to use different settings.",
+          "The empty session already exists. Its first message goes again until Leverage answers. Start a new session to use different settings.",
         signal,
       });
       return;

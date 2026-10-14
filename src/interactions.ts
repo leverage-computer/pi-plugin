@@ -10,7 +10,7 @@ import {
   userText,
 } from "./workspace/view";
 
-type Interaction = "approvals" | "questions" | "model";
+type Interaction = "approvals" | "questions";
 
 /** The model and effort a person picked for their next message. */
 export type ModelChoice = { model: string; reasoningEffort?: string };
@@ -117,8 +117,8 @@ function toolName(invocation: Invocation): string {
 }
 
 /**
- * The dialogs for what waits on a person: tool approvals, the agent's
- * questions, queued messages, and the model for the next message.
+ * The dialogs for what waits on a person: tool approvals and the agent's
+ * questions.
  */
 export class PendingInteractions {
   private active?: { id?: string; controller: AbortController };
@@ -132,7 +132,6 @@ export class PendingInteractions {
     private readonly source: InteractionSource,
     private readonly signal: AbortSignal,
     private readonly canWrite: () => boolean = () => true,
-    private readonly chooseModel: (choice: ModelChoice) => void = () => {},
   ) {
     this.ui = dialogs(ctx);
     this.lastCanWrite = canWrite();
@@ -199,9 +198,7 @@ export class PendingInteractions {
       );
     }
     if (!this.ui.hasUI) {
-      throw new Error(
-        "Open Pi interactively to answer requests and choose session settings.",
-      );
+      throw new Error("Open Pi interactively to answer requests.");
     }
     if (this.active) {
       this.ui.notify("Close the current Leverage dialog first.", "info");
@@ -214,9 +211,6 @@ export class PendingInteractions {
     this.active = active;
     const signal = AbortSignal.any([this.signal, active.controller.signal]);
     try {
-      if (kind === "model") {
-        return await this.model(signal);
-      }
       await this.source.refresh();
       if (signal.aborted) {
         return;
@@ -522,64 +516,5 @@ export class PendingInteractions {
       }
     }
     return undefined;
-  }
-
-  // Queued messages can be sent into the running turn now, or taken back.
-
-  // Leverage changes a session's model with the next message, so the choice waits for it.
-  private async model(signal: AbortSignal): Promise<void> {
-    const { session } = this.docs["leverage.session"];
-    const family = session?.providerFamily;
-    const models = (await workspace.models(signal)).filter(
-      (model) => !model.legacy && (!family || model.family === family),
-    );
-    if (signal.aborted) {
-      return;
-    }
-    if (!models.length) {
-      this.ui.notify("No hosted models are available.", "warning");
-      return;
-    }
-    const current = session?.model;
-    const labels = models.map(
-      (model) => `${model.label}${model.id === current ? " (current)" : ""}`,
-    );
-    const picked = await this.ui.choose({
-      title: "Leverage session model",
-      choices: labels,
-      signal,
-    });
-    const model =
-      picked === undefined ? undefined : models[labels.indexOf(picked)];
-    if (!model) {
-      return;
-    }
-    if (signal.aborted) {
-      return;
-    }
-    let reasoningEffort: string | undefined;
-    if (model.reasoningEfforts.length) {
-      const fallback = model.defaultReasoningEffort;
-      const efforts = model.reasoningEfforts.map(
-        (one) => `${one}${one === fallback ? " (default)" : ""}`,
-      );
-      const effort = await this.ui.choose({
-        title: "Reasoning effort",
-        choices: efforts,
-        signal,
-      });
-      if (effort === undefined) {
-        return;
-      }
-      reasoningEffort = model.reasoningEfforts[efforts.indexOf(effort)];
-    }
-    this.chooseModel({
-      model: model.id,
-      ...(reasoningEffort ? { reasoningEffort } : {}),
-    });
-    this.ui.notify(
-      `${model.label}${reasoningEffort ? ` (${reasoningEffort})` : ""} is used from your next message.`,
-      "info",
-    );
   }
 }

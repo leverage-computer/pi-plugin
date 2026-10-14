@@ -208,7 +208,10 @@ export function statusLines(
         ? join(others.map((one) => personText(one, paint)))
         : paint("dim", "Only you here"),
       ...waiting.map((item) =>
-        paint("dim", `Follow-up: ${userText(item.content).split("\n")[0]}`),
+        paint(
+          "dim",
+          `${item.mode === "steer" ? "Steering" : "Follow-up"}: ${userText(item.content).split("\n")[0]}`,
+        ),
       ),
       ...(waiting.length
         ? [
@@ -231,12 +234,12 @@ export function statusLines(
         `? ${count(questions, "question")} waiting · /leverage questions`,
       ),
       ...warning(
-        view.failedPrompt,
-        "▲ Send not confirmed · /leverage retry sends the same message",
+        view.unconfirmed,
+        "▲ Send not confirmed · it goes again until Leverage answers",
       ),
       ...keys([
         ["F1", "details"],
-        ["F2", "model"],
+        [keyText("app.model.select"), "model"],
         ["F3", "sessions"],
         ["F4", "approvals"],
       ]),
@@ -261,11 +264,11 @@ export function statusLines(
         ),
     ...warning(
       draft.unconfirmed,
-      "▲ Setup not confirmed · /leverage retry continues the same session",
+      "▲ Setup not confirmed · it goes again until Leverage answers",
     ),
     ...keys([
       ["F1", "context"],
-      ["F2", "model"],
+      [keyText("app.model.select"), "model"],
       ["F3", "sessions"],
     ]),
   ];

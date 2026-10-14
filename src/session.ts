@@ -3,10 +3,12 @@ import type {
   ExtensionContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import type { ToolSlot } from "@earendil-works/pi-durable";
 import { Container, matchesKey, Text, type TUI } from "@earendil-works/pi-tui";
 import { z } from "zod";
 import { api, sameSessionId } from "./api";
 import { clean, drawerContext, report } from "./drawers";
+import { UnconfirmedError } from "./errors";
 import { type ModelChoice, PendingInteractions } from "./interactions";
 import { createEntryComponent, entryText, type Shown } from "./render";
 import { workspace } from "./workspace/api";
@@ -16,6 +18,7 @@ import type {
   WorkspaceSession,
 } from "./workspace/schema";
 import {
+  conversationOf,
   EntryFold,
   entryData,
   messageOf,
@@ -38,6 +41,8 @@ export type Prompt = {
   files?: PromptFile[];
   // `send` steers the running turn. `queue` waits for a turn of its own.
   delivery: "send" | "queue";
+  // The uploaded files, once uploaded, so another attempt sends the same ones.
+  attachmentIds?: string[];
 };
 
 export interface ViewHooks {
@@ -77,6 +82,10 @@ export type HistoryMarker = z.infer<typeof historyMarkerSchema>;
 // Images Pi can draw, and the most it reads for one.
 const IMAGE_TYPE = /^image\/(png|jpeg|gif|webp)$/;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+// How long an unconfirmed message waits before it goes again, at first and at most.
+const RESEND_MS = 1_000;
+const MAX_RESEND_MS = 30_000;
 
 // A transcript position past any real one, so the first page is the newest.
 const NEWEST = 2 ** 31 - 1;
@@ -144,6 +153,20 @@ function callOf(entry: View["entries"][number]) {
     : undefined;
 }
 
+// The sub-agent conversation a call names in its details: its result's once
+// it has one, else its running slot's.
+function agentOf(
+  result: View["entries"][number] | undefined,
+  slot: ToolSlot | undefined,
+): number | undefined {
+  const message = result ? messageOf(result) : undefined;
+  return (
+    conversationOf(
+      message?.role === "toolResult" ? message.details : undefined,
+    ) ?? conversationOf(slot?.details)
+  );
+}
+
 export async function viewRemoteHistory(
   ctx: ExtensionContext,
   session: WorkspaceSession,
@@ -181,9 +204,13 @@ export async function viewRemoteHistory(
     const shown = (entry: View["entries"][number]): Shown => {
       const call = callOf(entry);
       const result = call ? results.get(call.id) : undefined;
+      const agent = agentOf(result, undefined);
+      const conversation =
+        agent === undefined ? undefined : fold.subagent(agent)?.current();
       return {
         entry,
         ...(result ? { result } : {}),
+        ...(conversation ? { conversation } : {}),
         members,
         ...(viewerId ? { viewerId } : {}),
         images: new Map(),
@@ -304,10 +331,11 @@ export class SessionView {
   ready = false;
   // Why the view cannot take input, after a lost connection or access.
   problem?: string;
-  failedPrompt?: Prompt;
+  // A message Leverage has not confirmed yet. It goes again on its own.
+  unconfirmed?: Prompt;
   // The session's folder, for the footer.
   place = "";
-  // A model picked for the next message. Leverage switches when it is sent.
+  // A model picked in Pi for the next message. Leverage switches when it is sent.
   nextModel?: ModelChoice;
   readonly signal: AbortSignal;
   private readonly controller = new AbortController();
@@ -322,10 +350,13 @@ export class SessionView {
   private readonly shown = new Map<string, Shown>();
   // Requests whose dialog opened on its own. Escape leaves them pending and quiet.
   private readonly prompted = new Set<string>();
+  // The sub-agent conversations a card shows, by ID, and how to stop following each.
+  private readonly following = new Map<number, () => void>();
   private rendered?: View["entries"];
   private readonly unsubscribe: () => void;
   private closed = false;
   private sending = false;
+  private resending = false;
   private stopping = false;
 
   constructor(
@@ -372,12 +403,14 @@ export class SessionView {
     const slot = call
       ? this.view.docs["pi.live"]?.tools?.find((one) => one.callId === call.id)
       : undefined;
+    const conversation = this.conversation(agentOf(result, slot));
     const last = this.shown.get(id);
     if (
       last &&
       last.entry === entry &&
       last.result === result &&
       last.slot === slot &&
+      last.conversation === conversation &&
       last.members === doc.members &&
       last.viewerId === doc.userId &&
       last.images === this.images
@@ -388,12 +421,35 @@ export class SessionView {
       entry,
       ...(result ? { result } : {}),
       ...(slot ? { slot } : {}),
+      ...(conversation ? { conversation } : {}),
       members: doc.members,
       ...(doc.userId ? { viewerId: doc.userId } : {}),
       images: this.images,
     };
     this.shown.set(id, next);
     return next;
+  }
+
+  /**
+   * A sub-agent's entries, by the conversation its call's details name. The
+   * view attaches to that conversation once, as a Pi Durable UI attaches to
+   * a child, and redraws the cards when it changes.
+   */
+  private conversation(id: number | undefined): View["entries"] | undefined {
+    if (id === undefined) {
+      return undefined;
+    }
+    const state = this.replica.conversation(id);
+    if (!state) {
+      return undefined;
+    }
+    if (!this.following.has(id)) {
+      this.following.set(
+        id,
+        state.subscribe(() => this.hooks.changed()),
+      );
+    }
+    return state.value.entries;
   }
 
   get writable(): boolean {
@@ -454,10 +510,6 @@ export class SessionView {
       this.replica,
       signal,
       () => this.writable,
-      (choice) => {
-        this.nextModel = choice;
-        this.hooks.changed();
-      },
     );
     if (!sessionLink(ctx.sessionManager.getBranch())) {
       this.pi.appendEntry(LINK_ENTRY, link);
@@ -473,52 +525,22 @@ export class SessionView {
     return this.replica.refresh();
   }
 
+  /**
+   * Sends a message and resolves once Leverage stores it. A message Leverage
+   * has not confirmed goes again with the same ID until it does, as a Pi
+   * Durable submission keeps its request ID. Leverage stores it once.
+   */
   async send(prompt: Prompt): Promise<void> {
     if (this.sending) {
       throw new Error("Wait for the current message to be sent.");
     }
     this.sending = true;
     try {
-      const attachmentIds = await Promise.all(
-        (prompt.files ?? []).map((file) =>
-          workspace.upload(
-            {
-              filename: file.filename,
-              contentType: file.contentType,
-              bytes: Buffer.from(file.data, "base64"),
-            },
-            this.signal,
-          ),
-        ),
-      );
-      const next = this.nextModel;
-      const input = await workspace.send(
-        this.session.id,
-        {
-          clientRequestId: prompt.id,
-          content: prompt.text,
-          delivery: prompt.delivery,
-          ...(attachmentIds.length ? { attachmentIds } : {}),
-          ...(next ? { model: next.model } : {}),
-          ...(next?.reasoningEffort
-            ? { reasoningEffort: next.reasoningEffort }
-            : {}),
-        },
-        this.signal,
-      );
-      if (this.closed) {
-        return;
-      }
-      if (this.failedPrompt?.id === prompt.id) {
-        this.failedPrompt = undefined;
-      }
-      if (this.nextModel === next) {
-        this.nextModel = undefined;
-      }
-      this.replica.remember(input);
+      await this.deliver(prompt);
     } catch (error) {
-      if (!this.closed) {
-        this.failedPrompt = prompt;
+      if (!this.closed && error instanceof UnconfirmedError) {
+        this.unconfirmed = prompt;
+        void this.resend(prompt);
       }
       throw error;
     } finally {
@@ -526,6 +548,83 @@ export class SessionView {
         this.sending = false;
         this.hooks.changed();
       }
+    }
+  }
+
+  // One attempt. Its attachments upload once, so another attempt reuses them.
+  private async deliver(prompt: Prompt): Promise<void> {
+    prompt.attachmentIds ??= await Promise.all(
+      (prompt.files ?? []).map((file) =>
+        workspace.upload(
+          {
+            filename: file.filename,
+            contentType: file.contentType,
+            bytes: Buffer.from(file.data, "base64"),
+          },
+          this.signal,
+        ),
+      ),
+    );
+    const { attachmentIds } = prompt;
+    const next = this.nextModel;
+    const input = await workspace.send(
+      this.session.id,
+      {
+        clientRequestId: prompt.id,
+        content: prompt.text,
+        delivery: prompt.delivery,
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(next ? { model: next.model } : {}),
+        ...(next?.reasoningEffort
+          ? { reasoningEffort: next.reasoningEffort }
+          : {}),
+      },
+      this.signal,
+    );
+    if (this.closed) {
+      return;
+    }
+    if (this.unconfirmed?.id === prompt.id) {
+      this.unconfirmed = undefined;
+    }
+    if (this.nextModel === next) {
+      this.nextModel = undefined;
+    }
+    this.replica.remember(input);
+  }
+
+  // Sends an unconfirmed message again, waiting longer each time, until
+  // Leverage confirms or refuses it, or the view closes.
+  private async resend(prompt: Prompt): Promise<void> {
+    if (this.resending) {
+      return;
+    }
+    this.resending = true;
+    try {
+      let wait = RESEND_MS;
+      while (!this.closed && this.unconfirmed?.id === prompt.id) {
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        wait = Math.min(wait * 2, MAX_RESEND_MS);
+        if (this.closed || this.sending) {
+          continue;
+        }
+        this.sending = true;
+        try {
+          await this.deliver(prompt);
+        } catch (error) {
+          if (!(error instanceof UnconfirmedError) && !this.closed) {
+            this.unconfirmed = undefined;
+            report(this.ctx, error);
+          }
+        } finally {
+          if (!this.closed) {
+            this.sending = false;
+            this.hooks.changed();
+          }
+        }
+      }
+    } finally {
+      this.resending = false;
     }
   }
 
@@ -557,6 +656,10 @@ export class SessionView {
     this.closed = true;
     this.controller.abort();
     this.unsubscribe();
+    for (const stop of this.following.values()) {
+      stop();
+    }
+    this.following.clear();
     this.interactions?.close();
     this.replica.close();
   }
