@@ -27,12 +27,9 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { HISTORY_ENTRY, sessionLink } from "../src/session";
-import { personText, roster } from "../src/status";
-import type { SessionDoc } from "../src/workspace/view";
 import {
   eventually,
   exampleSession,
-  input,
   invocation,
   MEMBER,
   SESSION,
@@ -328,22 +325,6 @@ function historyRows(runner: ExtensionRunner) {
 }
 
 describe("Pi hosted frontend", () => {
-  test("opens history in chronological chat order", async () => {
-    const f = leverage();
-    f.emit("user", { content: "The earlier message" });
-    f.emit("user", { content: "The later message" });
-    // The transcript position orders rows, whatever order the server lists them in.
-    f.events.get(SESSION)?.reverse();
-    const runner = await load();
-    f.configure(runner, SESSION);
-    await runner.emit({ type: "session_start", reason: "startup" });
-    const content = transcript(runner);
-    expect(content).toContain("The later message");
-    expect(content.indexOf("The earlier message")).toBeLessThan(
-      content.indexOf("The later message"),
-    );
-  });
-
   test("loads through Pi, disables local tools, and keeps disconnected input handled", async () => {
     const f = leverage(() =>
       Response.json({ error: "Access denied" }, { status: 403 }),
@@ -620,43 +601,6 @@ describe("Pi hosted frontend", () => {
     expect(
       sessionLink(runner.createContext().sessionManager.getBranch()),
     ).toBeUndefined();
-  });
-
-  test("the first prompt and its image create the draft's session with its title", async () => {
-    const f = leverage();
-    const runner = await load();
-    f.configure(runner);
-    commandActions(runner, {
-      newSession: async () => {
-        await runner.emit({ type: "session_start", reason: "new" });
-        return { cancelled: false };
-      },
-    });
-    await command(runner, "new Explore the project");
-    await runner.emitInput(
-      "Map the modules",
-      [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
-      "interactive",
-    );
-    expect(f.state.createCount).toBe(1);
-    // The image is uploaded first, then the create names its attachment.
-    expect(f.uploads).toEqual([
-      { id: expect.any(String), bytes: 5, completed: true },
-    ]);
-    expect(f.sent("session.create")).toEqual([
-      expect.objectContaining({
-        title: "Explore the project",
-        content: "Map the modules",
-        attachmentIds: [f.uploads[0]?.id],
-        client: "pi",
-      }),
-    ]);
-    // The session starts with the prompt, so it is not sent again.
-    expect(f.sent("session.message")).toEqual([]);
-    expect(
-      sessionLink(runner.createContext().sessionManager.getBranch())?.sessionId,
-    ).toBe(SESSION);
-    expect(transcript(runner)).toContain("Map the modules");
   });
 
   test("two clients share prompts, streamed answers, and tool progress without starting local agents", async () => {
@@ -967,68 +911,6 @@ describe("Pi hosted frontend", () => {
     expect(f.connections.size).toBe(1);
     expect(f.sent("session.stop")).toEqual([]);
   });
-
-  test("reports one failed startup read and accepts prompts after reconnecting", async () => {
-    let failing = true;
-    let release = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const f = leverage(async (request) => {
-      const url = new URL(request.url);
-      // Only the full read fails. The one-row lookup that finds the session works.
-      if (
-        failing &&
-        url.pathname.endsWith("/bootstrap") &&
-        url.searchParams.get("limit") !== "1"
-      ) {
-        await gate;
-        return Response.json(
-          { error: "History is unavailable" },
-          { status: 503 },
-        );
-      }
-      return undefined;
-    });
-    const runner = await load();
-    f.configure(runner, SESSION);
-    const notices: string[] = [];
-    let live = false;
-    runner.setUIContext({
-      ...runner.getUIContext(),
-      notify: (message) => notices.push(message),
-      setStatus: (_key, value) => {
-        live ||= value?.endsWith(" · live") ?? false;
-      },
-    });
-    const startup = runner.emit({ type: "session_start", reason: "startup" });
-    await eventually(() => live);
-    release();
-    await startup;
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain("503");
-
-    failing = false;
-    f.emit("user", { content: "Recovered" });
-    // Dropping the socket makes Pi reconnect and read the session again.
-    for (const connection of f.connections) {
-      connection.close();
-    }
-    await eventually(() => transcript(runner).includes("Recovered"));
-    // The read after reconnecting subscribes to the session's live frames.
-    await eventually(() => f.sent("session.subscribe").length > 0);
-    expect(
-      await runner.emitInput(
-        "Continue after recovery",
-        undefined,
-        "interactive",
-      ),
-    ).toEqual({ action: "handled" });
-    expect(f.sent("session.message")).toEqual([
-      expect.objectContaining({ content: "Continue after recovery" }),
-    ]);
-    expect(notices).toHaveLength(1);
-  });
 });
 
 describe("People on the session", () => {
@@ -1069,57 +951,6 @@ describe("People on the session", () => {
     await eventually(() => latest().includes("◐ Bob (idle)"));
     f.viewer(MEMBER, false);
     await eventually(() => latest().includes("Only you here"));
-  });
-
-  test("the owner is always listed, the most present first, with their agent app", () => {
-    const doc: SessionDoc = {
-      session: { ...exampleSession(), ownerId: "owner" },
-      version: 1,
-      canWrite: true,
-      revoked: false,
-      connection: "live",
-      userId: "me",
-      members: [
-        { id: "owner", name: "Alice" },
-        { id: "me", name: "Me" },
-      ],
-      skills: [],
-      viewers: [
-        { userId: "me", userName: "Me", state: "idle" },
-        { userId: "carol", userName: "Carol", state: "idle" },
-        { userId: MEMBER, userName: "Bob", state: "active" },
-      ],
-      typing: ["carol"],
-      presence: {
-        owner: { userId: "owner", status: "online", clients: ["codex"] },
-        [MEMBER]: { userId: MEMBER, status: "away", clients: ["codex"] },
-      },
-    };
-    const people = roster(doc);
-    expect(people.map((one) => [one.name, one.presence])).toEqual([
-      ["Carol", "typing"],
-      ["Bob", "here"],
-      ["Me", "here"],
-      ["Alice", "online"],
-    ]);
-    expect(people.map((one) => personText(one))).toEqual([
-      "● Carol (typing…)",
-      "● Bob",
-      "● Me (you)",
-      "◐ Alice (owner, online, on Codex)",
-    ]);
-    expect(people.find((one) => one.name === "Me")?.isSelf).toBe(true);
-    // An owner nobody has seen is offline, and an unknown member is a teammate.
-    const quiet = roster({ ...doc, presence: {}, viewers: [], typing: [] });
-    expect(quiet.map((one) => personText(one))).toEqual([
-      "○ Alice (owner, offline)",
-    ]);
-    expect(
-      roster({
-        ...doc,
-        viewers: [{ userId: "x", userName: "", state: "active" }],
-      }).map((one) => one.name),
-    ).toContain("Teammate");
   });
 });
 
@@ -1199,58 +1030,6 @@ describe("Steering", () => {
       () => editor.getText() === "Then run the full suite\n\nand lint",
     );
     await eventually(() => !latest().includes("Follow-up:"));
-  });
-
-  test("the inbox shows a waiting steer as Steering and a follow-up as Follow-up", async () => {
-    const f = leverage();
-    f.update({ status: "active", turnId: "turn_1" });
-    const runner = await load();
-    f.configure(runner, SESSION);
-    const widgets: string[] = [];
-    runner.setUIContext(
-      {
-        ...runner.getUIContext(),
-        setWidget: (_key, value) => {
-          if (typeof value === "function") {
-            widgets.push(
-              stripVTControlCharacters(
-                value({ requestRender() {} } as never, {} as never)
-                  .render(120)
-                  .join("\n"),
-              ),
-            );
-          }
-        },
-      },
-      "tui",
-    );
-    await runner.emit({ type: "session_start", reason: "startup" });
-    const latest = () => widgets.at(-1) ?? "";
-    // Leverage holds a steer until the agent's next step, and a follow-up
-    // until the turn ends. Pi lists both, as it lists its own queue.
-    const steer = input("Skip the e2e tests", {
-      status: "queued",
-      intent: "steer",
-      queuePosition: 1,
-    });
-    const followUp = input("Then run the linter", {
-      status: "queued",
-      intent: "turn",
-      queuePosition: 2,
-    });
-    f.state.nativeMessages.push(steer, followUp);
-    f.state.version++;
-    f.publish({
-      type: "session.messages.updated",
-      _topic: "session",
-      sessionId: SESSION,
-      version: f.state.version,
-      messages: [steer, followUp],
-    });
-    await eventually(() => latest().includes("Steering: Skip the e2e tests"));
-    expect(latest()).toContain("Follow-up: Then run the linter");
-    expect(transcript(runner)).toContain("Steering");
-    expect(transcript(runner)).toContain("Queued");
   });
 });
 

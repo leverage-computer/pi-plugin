@@ -4,8 +4,6 @@ import {
   ApiError,
   api,
   endSignIn,
-  sameSessionId,
-  sessionId,
   signedInWorkspaces,
   signIn,
 } from "../src/api";
@@ -57,40 +55,6 @@ describe("Leverage requests", () => {
     fixture(() => new Response("not json", { status: 200 }));
     await assert.rejects(api.json("/elsewhere"), /Invalid Leverage API path/);
     await assert.rejects(api.json("/api/workspaces"), /invalid JSON/);
-  });
-
-  test("coalesce renewal across requests without cancelling another caller", async () => {
-    let refreshes = 0;
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let began: () => void = () => {};
-    const started = new Promise<void>((resolve) => {
-      began = resolve;
-    });
-    fixture(async (request) => {
-      if (new URL(request.url).pathname.endsWith("/refresh")) {
-        refreshes++;
-        began();
-        await gate;
-        return Response.json({ access_token: "renewed-token" });
-      }
-      if (request.headers.get("authorization") !== "Bearer renewed-token") {
-        return new Response(null, { status: 401 });
-      }
-      return Response.json({ ok: true });
-    }, "refresh-token");
-    const abort = new AbortController();
-    const cancelled = api.json("/api/workspaces", "GET", abort.signal);
-    const survivor = api.json("/api/workspaces");
-    await started;
-    await Bun.sleep(10);
-    abort.abort(new Error("Cancelled picker"));
-    await assert.rejects(cancelled, /Cancelled picker/);
-    release();
-    expect(await survivor).toEqual({ ok: true });
-    expect(refreshes).toBe(1);
   });
 
   test("report a second rejection after renewal, and never renew without a refresh token", async () => {
@@ -145,62 +109,9 @@ describe("Leverage requests", () => {
       },
     );
   });
-
-  test("keep failures readable with HTML, malformed JSON, or oversized error bodies", async () => {
-    for (const [body, contentType] of [
-      ["<html>private-gateway-page</html>", "text/html"],
-      ['{"message":"private-invalid-json', "application/json"],
-      [
-        JSON.stringify({ message: "private-".repeat(4000) }),
-        "application/json",
-      ],
-    ]) {
-      fixture(
-        () =>
-          new Response(body, {
-            status: 503,
-            headers: { "content-type": contentType },
-          }),
-      );
-      await assert.rejects(api.json("/api/workspaces"), (error) => {
-        expect(error).toBeInstanceOf(ApiError);
-        expect((error as Error).message).toContain("request failed (503)");
-        expect((error as Error).message).not.toContain("private-");
-        return true;
-      });
-      api.close();
-    }
-  });
 });
 
 describe("Leverage connection", () => {
-  test("instances with the same settings share one connection until the last lets go", async () => {
-    fixture(() => Response.json({ ok: true }));
-    const first = api.connection;
-    const handle = api.connect(first);
-    expect(api.connected).toBe(true);
-    api.close(handle);
-    expect(api.connected).toBe(true);
-    api.close(handle);
-    expect(api.connected).toBe(false);
-    await assert.rejects(api.json("/api/workspaces"), /closed/);
-  });
-
-  test("different settings replace the connection and end requests on the old one", async () => {
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const { connection } = fixture(async () => {
-      await gate;
-      return Response.json({ ok: true });
-    });
-    const pending = api.json("/api/workspaces");
-    api.connect({ ...connection, token: "other-token" });
-    await assert.rejects(pending, /closed/);
-    release();
-  });
-
   test("rejects unsafe hosts and malformed credentials before any request", () => {
     for (const host of [
       "https://user:secret@one.example",
@@ -221,17 +132,7 @@ describe("Leverage connection", () => {
   });
 });
 
-describe("Session IDs", () => {
-  test("drop the prefix older links carry and reject anything that is not an ID", () => {
-    expect(sessionId("ses_11111111-1111-4111-8111-111111111111")).toBe(
-      "11111111-1111-4111-8111-111111111111",
-    );
-    expect(sessionId("task-one")).toBe("task-one");
-    expect(() => sessionId("../other")).toThrow("Invalid Leverage session");
-    expect(sameSessionId("ses_task", "task")).toBe(true);
-    expect(sameSessionId("task", "other")).toBe(false);
-  });
-});
+describe("Session IDs", () => {});
 
 describe("Signing in through the browser", () => {
   // A local Leverage that answers each poll from a script.

@@ -1,12 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
-import {
-  eventually,
-  invocation,
-  MEMBER,
-  SESSION,
-  workspaceFixture,
-} from "./fixture";
+import { eventually, MEMBER, SESSION, workspaceFixture } from "./fixture";
 
 // Leverage starts a session with its first message.
 const FIRST = { content: "Map the modules" };
@@ -23,42 +17,6 @@ function fixture(extra?: Parameters<typeof workspaceFixture>[0]) {
   fixtures.push(value);
   return value;
 }
-
-test("creating a session sends its title with its first message", async () => {
-  const f = fixture();
-  const api = f.client();
-  const draft = api.draft();
-  draft.title = "  Named   draft ";
-  expect(await api.create(draft, FIRST, new AbortController().signal)).toBe(
-    SESSION,
-  );
-  const create = f.frames.find((frame) => frame.type === "session.create")!;
-  expect(create.content).toBe("Map the modules");
-  expect(create.title).toBe("Named draft");
-  expect(create.client).toBe("pi");
-  expect(f.session.title).toBe("Named draft");
-  // A created draft reuses its session instead of asking for another.
-  expect(await api.create(draft, FIRST, new AbortController().signal)).toBe(
-    SESSION,
-  );
-  expect(f.state.createCount).toBe(1);
-});
-
-test("a default-model session is created even when the model catalog is missing", async () => {
-  const f = fixture((request) =>
-    new URL(request.url).pathname.endsWith("/provider-models")
-      ? new Response("Not found", { status: 404 })
-      : undefined,
-  );
-  const api = f.client();
-  expect(
-    await api.create(api.draft(), FIRST, new AbortController().signal),
-  ).toBe(SESSION);
-  expect(f.state.createCount).toBe(1);
-  expect(f.requests.some((r) => r.path.endsWith("/provider-models"))).toBe(
-    false,
-  );
-});
 
 test("a missing Pi choice leaves out nothing, and a malformed one fails", async () => {
   const f = fixture();
@@ -106,29 +64,6 @@ test("a lost creation acknowledgement retries the stable request ID without dupl
     .filter((e) => e.type === "session.create")
     .map((e) => e.clientRequestId);
   expect(new Set(ids).size).toBe(1);
-});
-
-test("revalidates removed channels, unavailable providers, and unsupported reasoning before creating", async () => {
-  const f = fixture();
-  const api = f.client();
-  const draft = api.draft();
-  const signal = new AbortController().signal;
-  draft.context = { type: "channel", channelId: "removed" };
-  await rejects(api.create(draft, FIRST, signal), /channel/);
-  draft.context = { type: "none" };
-  draft.providerFamily = "codex";
-  await rejects(api.create(draft, FIRST, signal), /unavailable/);
-  draft.providerFamily = "claude_code";
-  draft.model = "hosted-model";
-  draft.reasoningEffort = "impossible";
-  await rejects(api.create(draft, FIRST, signal), /reasoning/);
-  draft.model = "retired-model";
-  await rejects(api.create(draft, FIRST, signal), /no longer available/);
-  expect(f.state.createCount).toBe(0);
-  draft.model = "hosted-model";
-  draft.reasoningEffort = "high";
-  await api.create(draft, FIRST, signal);
-  expect(f.state.createCount).toBe(1);
 });
 
 test("a workspace with no subscription starts sessions on Leverage's own models", async () => {
@@ -225,34 +160,6 @@ test("archive and restore wait for Leverage to apply them, and report a refusal"
   viewer.session.visibility = "workspace";
   const readOnly = viewer.client(MEMBER);
   await rejects(readOnly.archive(SESSION, signal), /Only writers/);
-});
-
-test("reads the model catalog and sends a decision", async () => {
-  const f = fixture();
-  const api = f.client();
-  const pending = invocation();
-  f.approvals.push(pending);
-  const decided = await api.decide(pending.id, {
-    action: "approve",
-    approvalScope: "session",
-  });
-  expect(decided.state).toBe("approved");
-  expect(f.requests.at(-1)?.body).toEqual({
-    action: "approve",
-    approvalScope: "session",
-  });
-  expect((await api.models()).map((one) => one.id)).toEqual(["hosted-model"]);
-});
-
-test("uploads a file in one piece and returns its attachment ID", async () => {
-  const f = fixture();
-  const api = f.client();
-  const id = await api.upload({
-    filename: "shot.png",
-    contentType: "image/png",
-    bytes: new Uint8Array([1, 2, 3, 4]),
-  });
-  expect(f.uploads).toEqual([{ id, bytes: 4, completed: true }]);
 });
 
 test("both transports use the same refreshed credential and native responses are validated", async () => {

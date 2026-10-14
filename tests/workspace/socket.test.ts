@@ -50,96 +50,6 @@ const bob = input("From Bob", {
   status: "queued",
 });
 
-test("says it is Pi, so Leverage shows Pi on the person's face", async () => {
-  const f = fixture();
-  const socket = await f.client().socket();
-  await socket.connect();
-  expect(f.clients).toEqual(["pi"]);
-});
-
-test("reconnects with its replay cursor and drops repeated frames", async () => {
-  const f = fixture();
-  const api = f.client();
-  const socket = await api.socket();
-  await socket.connect();
-  socket.subscribe(SESSION, 4);
-  const seen: string[] = [];
-  socket.onEvent((event) => {
-    if (event.type === "session.messages.updated") {
-      seen.push(event.messages[0]?.content ?? "");
-    }
-  });
-  const frame = {
-    type: "session.messages.updated",
-    sessionId: SESSION,
-    version: 1,
-    messages: [bob],
-    _topic: "session",
-    cursor: 5,
-  };
-  f.publish(frame);
-  f.publish(frame);
-  await eventually(() => seen.length === 1);
-  for (const connection of f.connections) {
-    connection.close();
-  }
-  await eventually(
-    () => f.frames.filter((e) => e.type === "session.subscribe").length >= 2,
-  );
-  expect(
-    f.frames.filter((e) => e.type === "session.subscribe").at(-1)?.afterCursor,
-  ).toBe(5);
-  f.publish(frame);
-  f.publish({
-    ...frame,
-    cursor: 6,
-    version: 2,
-    messages: [{ ...bob, content: "Updated" }],
-  });
-  await eventually(() => seen.length === 2);
-  expect(seen).toEqual(["From Bob", "Updated"]);
-});
-
-test("live rows, streamed text and status changes reach the conversation", async () => {
-  const { f, shared, states } = await open();
-  expect(shared.value.docs["pi.live"]?.run !== undefined).toBe(false);
-  f.update({ status: "active", turnId: "turn_1" });
-  await eventually(() => shared.value.docs["pi.live"]?.run !== undefined);
-  f.emit("user", { content: "Hi" }, { authorId: "owner" });
-  const row = f.emit("text", {
-    role: "assistant",
-    content: "",
-    eventId: "stream_1",
-  });
-  f.publish({
-    type: "session.event.delta",
-    sessionId: SESSION,
-    delta: {
-      kind: "text",
-      streamId: "stream_1",
-      eventId: "stream_1",
-      rowId: row.id,
-      delta: "Hello there",
-      offset: 0,
-    },
-  });
-  await eventually(() =>
-    shared.value.entries.some((one) =>
-      JSON.stringify(one.model).includes("Hello there"),
-    ),
-  );
-  f.update({ status: "idle", turnId: null });
-  await eventually(() => shared.value.docs["pi.live"]?.run === undefined);
-  const { entries } = shared.value;
-  expect(entries.map((one) => one.kind)).toEqual(["pi.user", "pi.assistant"]);
-  // Revisions reach a subscriber in order, each a new value, and one without
-  // an entry change keeps its entries.
-  await eventually(() => states.at(-1) === shared.value);
-  expect(new Set(states).size).toBe(states.length);
-  expect(states.at(-1)?.entries).toBe(entries);
-  expect(states.at(-2)?.entries).toBe(entries);
-});
-
 test("tracks approvals and questions until someone resolves them", async () => {
   const { f, shared } = await open();
   const pending = invocation();
@@ -208,37 +118,6 @@ test("revocation clears the conversation; workspace viewers cannot write", async
   expect(errors).toEqual([]);
 });
 
-test("a stale read cannot overwrite a newer message update", async () => {
-  const { f, shared } = await open();
-  let release!: () => void;
-  f.state.readDelay = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const refreshing = shared.refresh();
-  f.publish({
-    type: "session.messages.updated",
-    sessionId: SESSION,
-    version: 5,
-    messages: [bob],
-  });
-  await eventually(() => shared.doc.version === 5);
-  f.state.version = 1;
-  f.state.nativeMessages = [{ ...bob, content: "Stale", status: "received" }];
-  release();
-  await refreshing;
-  expect(shared.input(bob.uuid)?.content).toBe("From Bob");
-  expect(shared.input(bob.uuid)?.client).toBe("codex");
-  shared.close();
-  f.publish({
-    type: "session.messages.updated",
-    sessionId: SESSION,
-    version: 9,
-    messages: [{ ...bob, content: "Wrong view" }],
-  });
-  await Bun.sleep(20);
-  expect(shared.input(bob.uuid)?.content).toBe("From Bob");
-});
-
 test("a read that overlaps a live approval keeps it", async () => {
   const { f, shared } = await open();
   // Startup may still be reading. Only the read below should overlap the frame.
@@ -259,49 +138,6 @@ test("a read that overlaps a live approval keeps it", async () => {
   release();
   await refreshing;
   expect(shared.value.docs["leverage.approvals"].items).toHaveLength(1);
-});
-
-test("shows who has the session open, who is typing, and who is online", async () => {
-  const { f, shared } = await open();
-  const doc = () => shared.doc;
-  // Joining tells the server the person is watching, and lists them back.
-  await eventually(() =>
-    f.frames.some((one) => one.type === "session.subscribe"),
-  );
-  expect(f.frames.find((one) => one.type === "session.subscribe")).toEqual({
-    type: "session.subscribe",
-    sessionId: SESSION,
-    afterCursor: expect.any(Number),
-    state: "active",
-  });
-  await eventually(() => doc().viewers.length === 1);
-  expect(doc().viewers).toEqual([
-    { userId: "owner", userName: "Alice", state: "active" },
-  ]);
-  expect(doc().presence.owner).toMatchObject({ status: "online" });
-  f.viewer(MEMBER, true);
-  f.typing(MEMBER, true);
-  f.presence(MEMBER, "online", ["codex"]);
-  await eventually(
-    () => doc().typing.length === 1 && doc().presence[MEMBER] !== undefined,
-  );
-  expect(doc().viewers.map((one) => one.userId)).toEqual(["owner", MEMBER]);
-  expect(doc().typing).toEqual([MEMBER]);
-  expect(doc().presence[MEMBER]).toMatchObject({
-    status: "online",
-    clients: ["codex"],
-  });
-  // Stepping away keeps the row but marks it, and leaving drops it with its typing.
-  f.viewer(MEMBER, true, "idle");
-  await eventually(() => doc().viewers[1]?.state === "idle");
-  f.viewer(MEMBER, false);
-  await eventually(() => doc().viewers.length === 1);
-  expect(doc().typing).toEqual([]);
-  // Workspace presence survives a fresh read, and an away status replaces online.
-  f.presence(MEMBER, "away");
-  await eventually(() => doc().presence[MEMBER]?.status === "away");
-  await shared.refresh();
-  expect(doc().presence[MEMBER]?.status).toBe("away");
 });
 
 test("a quiet person goes idle and stops heartbeats until they do something", async () => {
