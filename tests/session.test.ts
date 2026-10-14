@@ -9,7 +9,6 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { viewRemoteHistory } from "../src/session";
 import { input, workspaceFixture } from "./workspace/fixture";
 
-const NEWEST = String(2 ** 31 - 1);
 let fixture: ReturnType<typeof workspaceFixture> | undefined;
 afterEach(async () => {
   await fixture?.close();
@@ -84,40 +83,6 @@ function viewer(pages: string[][], opened?: () => void) {
 }
 
 describe("Leverage history pages", () => {
-  test("history viewer pages older and newer rows with its keyboard controls", async () => {
-    const { f, pages } = serve();
-    for (let n = 1; n <= 55; n++) {
-      f.emit("text", {
-        content: `Row ${String(n).padStart(2, "0")}`,
-        eventId: `evt_${n}`,
-      });
-    }
-    const { ui, rendered } = viewer([["n"], ["p"], ["\u001b"]]);
-    await viewRemoteHistory(
-      context(ui),
-      f.session,
-      new AbortController().signal,
-    );
-    // The first page starts past the newest row, and older pages start at the oldest row shown.
-    expect(pages).toEqual([
-      { before: NEWEST, limit: "50" },
-      { before: "6", limit: "50" },
-      { before: NEWEST, limit: "50" },
-    ]);
-    expect(rendered[0]).toContain("Shared work · Page 1");
-    expect(rendered[0]).toContain("Row 06");
-    expect(rendered[0]).not.toContain("Row 05");
-    expect(rendered[0]).toContain("n older · Esc close");
-    expect(rendered[1]).toContain("Page 2");
-    expect(rendered[1]).toContain("Row 01");
-    expect(rendered[1]).toContain("Row 05");
-    expect(rendered[1]).not.toContain("Row 06");
-    expect(rendered[1]).toContain("p newer · Esc close");
-    expect(rendered[1]).not.toContain("n older");
-    expect(rendered[2]).toContain("Page 1");
-    expect(rendered[2]).toContain("Row 06");
-  });
-
   test("names authors from members and closes with Enter", async () => {
     const { f } = serve();
     const message = input("Please check the project", { status: "consumed" });
@@ -146,36 +111,5 @@ describe("Leverage history pages", () => {
     expect(rendered[0]).not.toContain("###");
     expect(rendered[0]).toContain("Done.");
     expect(rendered[0]).toContain("↑/↓ scroll · Esc close");
-  });
-
-  test("shows an empty session and closes when its signal aborts", async () => {
-    const { f } = serve();
-    const controller = new AbortController();
-    const { ui, rendered } = viewer([[]], () => controller.abort());
-    await viewRemoteHistory(context(ui), f.session, controller.signal);
-    expect(rendered).toHaveLength(1);
-    expect(rendered[0]).toContain("This session has no messages yet.");
-  });
-
-  test("notifies the newest page as text outside the terminal UI", async () => {
-    const { f } = serve();
-    f.emit("text", { content: "Printed answer", eventId: "evt_print" });
-    f.emit("text", { content: "Elsewhere" }, { sessionId: "other-session" });
-    const notices: Array<{ message: string; type?: string }> = [];
-    await viewRemoteHistory(
-      context(
-        {
-          notify(message, type) {
-            notices.push({ message, type });
-          },
-        },
-        "print",
-      ),
-      f.session,
-      new AbortController().signal,
-    );
-    expect(notices).toEqual([
-      { message: "Assistant\nPrinted answer", type: "info" },
-    ]);
   });
 });

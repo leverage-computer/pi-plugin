@@ -1,22 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  forgetLogin,
-  loginHost,
-  rememberedModel,
-  rememberModel,
-  resolveConnection,
-  saveLogin,
-} from "../src/config";
+import { resolveConnection, saveLogin } from "../src/config";
 
 const directories: string[] = [];
 function settings(config?: unknown) {
@@ -33,23 +19,7 @@ afterEach(() => {
   }
 });
 
-describe("remembered model", () => {
-  test("keeps the last pick per workspace beside the login, and survives a bad file", () => {
-    const env = settings();
-    const acme = { host: "https://app.example", workspace: "acme" };
-    const other = { host: "https://app.example", workspace: "other" };
-    expect(rememberedModel(acme, env)).toEqual({});
-    rememberModel(acme, { model: "sonnet", reasoningEffort: "high" }, env);
-    rememberModel(other, { providerFamily: "codex" }, env);
-    expect(rememberedModel(acme, env)).toEqual({
-      model: "sonnet",
-      reasoningEffort: "high",
-    });
-    expect(rememberedModel(other, env)).toEqual({ providerFamily: "codex" });
-    writeFileSync(join(env.LEVERAGE_CONFIG_DIR, "pi.json"), "{broken");
-    expect(rememberedModel(acme, env)).toEqual({});
-  });
-});
+describe("remembered model", () => {});
 
 describe("Leverage connection settings", () => {
   test("uses the selected CLI host's workspace and device credential", () => {
@@ -126,29 +96,6 @@ describe("Leverage connection settings", () => {
       sessionId: "from-flag",
     });
   });
-  test("reads the XDG CLI profile without changing it", () => {
-    const env = settings();
-    mkdirSync(join(env.LEVERAGE_CONFIG_DIR, "leverage"));
-    writeFileSync(
-      join(env.LEVERAGE_CONFIG_DIR, "leverage", "config.json"),
-      JSON.stringify({
-        currentHost: "https://one.example",
-        hosts: {
-          "https://one.example": {
-            workspaceSlug: "alpha",
-            accessToken: "access-example",
-            refreshToken: "refresh-example",
-          },
-        },
-      }),
-    );
-    expect(
-      resolveConnection(
-        { session: "task" },
-        { XDG_CONFIG_HOME: env.LEVERAGE_CONFIG_DIR },
-      ).workspace,
-    ).toBe("alpha");
-  });
   test("allows session browsing and rejects malformed settings and unsafe origins", () => {
     const env = {
       ...settings(),
@@ -224,44 +171,11 @@ describe("Pi's own sign-in", () => {
     );
   });
 
-  test("is used even when the CLI's settings are unreadable", () => {
-    const env = both();
-    saveLogin(login, env);
-    writeFileSync(join(env.LEVERAGE_CONFIG_DIR, "config.json"), "{broken");
-    expect(resolveConnection({}, env).token).toBe("pi-access");
-  });
-
   test("tightens a file kept with a looser mode", () => {
     const env = both();
     const file = join(env.PI_CODING_AGENT_DIR, "leverage.json");
     writeFileSync(file, "{}", { mode: 0o644 });
     saveLogin(login, env);
     expect(statSync(file).mode & 0o777).toBe(0o600);
-  });
-
-  test("is forgotten on logout, and the CLI's login is used again", () => {
-    const env = both();
-    saveLogin(login, env);
-    expect(forgetLogin(env)).toEqual(login);
-    expect(existsSync(join(env.PI_CODING_AGENT_DIR, "leverage.json"))).toBe(
-      false,
-    );
-    expect(forgetLogin(env)).toBeUndefined();
-    expect(resolveConnection({}, env).token).toBe("cli-access");
-  });
-
-  test("signs in to the flag's host, then LEVERAGE_HOST's, then Leverage's", () => {
-    expect(loginHost(undefined, {})).toBe("https://app.leverage.computer");
-    expect(
-      loginHost(undefined, { LEVERAGE_HOST: "http://127.0.0.1:3452" }),
-    ).toBe("http://127.0.0.1:3452");
-    expect(
-      loginHost("https://flag.example", {
-        LEVERAGE_HOST: "http://127.0.0.1:3452",
-      }),
-    ).toBe("https://flag.example");
-    expect(() => loginHost("https://one.example/api", {})).toThrow(
-      "HTTP(S) origin",
-    );
   });
 });

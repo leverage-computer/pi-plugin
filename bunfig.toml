@@ -1,0 +1,5 @@
+[test]
+# Every test run reports how much of src/ it ran: a table, and coverage/lcov.info.
+coverage = true
+coverageReporter = ["text", "lcov"]
+coveragePathIgnorePatterns = ["tests/**"]

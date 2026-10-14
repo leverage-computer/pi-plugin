@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -24,5 +25,21 @@ jobs:
         with:
           bun-version: "1.4.2"
       - run: bun install --frozen-lockfile
-      - run: bun run check
+      # bunfig.toml has the tests report coverage, so check prints the table.
+      - name: Check
+        run: |
+          bun run check 2>&1 | tee "$RUNNER_TEMP/check.txt"
+          {
+            echo '### Coverage'
+            echo '```'
+            grep -E '^-+\||^File +\||^All files|^ src/' "$RUNNER_TEMP/check.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/coverage.md"
+          cat "$RUNNER_TEMP/coverage.md" >> "$GITHUB_STEP_SUMMARY"
+      # One comment per PR, updated on each push. A fork's token cannot comment.
+      - name: Comment coverage on the PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment ${{ github.event.pull_request.number }} --body-file "$RUNNER_TEMP/coverage.md" --edit-last --create-if-none
       - run: bun pm pack --dry-run
