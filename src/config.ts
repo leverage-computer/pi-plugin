@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -161,9 +162,11 @@ export function saveLogin(
 ): void {
   const file = loginFile(env);
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  // A file kept before keeps its mode, so tighten it before the tokens go in.
+  if (existsSync(file)) {
+    chmodSync(file, 0o600);
+  }
   writeFileSync(file, `${JSON.stringify(login, null, 2)}\n`, { mode: 0o600 });
-  // A file kept before keeps its mode, so set it again.
-  chmodSync(file, 0o600);
 }
 
 /** Forgets the `/leverage login` sign-in, and says what it was. */

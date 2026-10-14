@@ -153,6 +153,7 @@ export function workspaceFixture(extra?: Extra) {
   const state = {
     dropCreated: false,
     dropMessageAck: false,
+    stallUploads: false,
     createCount: 0,
     refreshCount: 0,
     version: 0,
@@ -245,6 +246,14 @@ export function workspaceFixture(extra?: Extra) {
         return new Response(null, { status: 400 });
       }
       if (path.startsWith("/upload/")) {
+        if (state.stallUploads) {
+          // Storage that never answers, until the client gives up.
+          return new Promise<Response>((resolve) =>
+            request.signal.addEventListener("abort", () =>
+              resolve(new Response(null, { status: 499 })),
+            ),
+          );
+        }
         const bytes = (await request.arrayBuffer()).byteLength;
         const upload = uploads.find((one) => path.endsWith(one.id));
         if (upload) {

@@ -218,6 +218,7 @@ function commandActions(
  */
 function composer(runner: ExtensionRunner) {
   let factory: Parameters<ExtensionUIContext["setEditorComponent"]>[0];
+  let text = "";
   const widgets: string[] = [];
   const notices: string[] = [];
   const overlays: string[] = [];
@@ -229,6 +230,10 @@ function composer(runner: ExtensionRunner) {
       },
       notify: (message) => {
         notices.push(message);
+      },
+      getEditorText: () => text,
+      setEditorText: (value) => {
+        text = value;
       },
       setWidget: (_key, value) => {
         if (typeof value === "function") {
@@ -284,6 +289,8 @@ function composer(runner: ExtensionRunner) {
     notices,
     overlays,
     latest: () => widgets.at(-1) ?? "",
+    // What Pi's composer holds when the extension sets it through the UI.
+    text: () => text,
     editor: () => factory!({ requestRender() {} } as never, theme, keys),
   };
 }
@@ -811,6 +818,41 @@ describe("Pi hosted frontend", () => {
     expect(again).toEqual(first!);
     expect(historyRows(runner)).toHaveLength(1);
     expect(transcript(runner)).toContain("Check the deploy");
+  }, 45_000);
+
+  test("a message Leverage refuses after Pi stopped waiting goes back into the composer", async () => {
+    const f = leverage();
+    f.update({ status: "active", turnId: "turn_1" });
+    const runner = await load();
+    f.configure(runner, SESSION);
+    const ui = composer(runner);
+    await runner.emit({ type: "session_start", reason: "startup" });
+    await eventually(() => ui.latest().includes("Only you here"));
+    f.state.dropMessageAck = true;
+    await runner.emitInput("Check the deploy", undefined, "interactive");
+    expect(ui.latest()).toContain("Send not confirmed");
+    // Pi sends it again on its own, and Leverage refuses that one.
+    await f.refuse(2, "Runner unavailable");
+    await eventually(() => ui.text() === "Check the deploy");
+    expect(ui.notices).toContain("Runner unavailable");
+  }, 45_000);
+
+  test("an upload that never answers gives up, and its message goes back into the composer", async () => {
+    const f = leverage();
+    const runner = await load();
+    f.configure(runner, SESSION);
+    const ui = composer(runner);
+    await runner.emit({ type: "session_start", reason: "startup" });
+    await eventually(() => ui.latest().includes("Only you here"));
+    f.state.stallUploads = true;
+    await runner.emitInput(
+      "Explain this image",
+      [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+      "interactive",
+    );
+    expect(ui.notices).toContain("The attachment upload timed out.");
+    expect(ui.text()).toBe("Explain this image");
+    expect(f.sent("session.message")).toHaveLength(0);
   }, 45_000);
 
   test("Pi's /compact, /tree, /name and model controls act on the Leverage session", async () => {
