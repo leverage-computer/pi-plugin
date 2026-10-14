@@ -147,7 +147,9 @@ gets**.
 
 ## Development
 
-You need Bun 1.4.2, Python 3 and macOS or Linux.
+You need Bun 1.4.2, Python 3 and macOS or Linux. [Nix](https://nixos.org)
+gives the shell all three, and lints each commit with Biome and nixfmt:
+`nix develop`, or `direnv allow` once.
 
 ```sh
 bun install --frozen-lockfile
