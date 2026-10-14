@@ -1,10 +1,10 @@
 # Changelog
 
-## 0.1.0 - 2026-10-13
+## 0.1.0 - 2026-10-14
 
 The first release. Pi runs as a frontend for a Leverage session: the agent
 runs in Leverage, and Pi draws the session and sends what you type. Needs Pi
-0.99.1 and Node.js 22.19 or newer.
+0.99.1 or newer before 2, tested on 1.2.0, and Node.js 22.19 or newer.
 
 ### Added
 
