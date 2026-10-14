@@ -53,9 +53,12 @@ Then, in Pi:
 
 - `/leverage new`, then type what you need. Your first message starts the
   session.
-- **F2** picks the model. **Ctrl+V** sends an image with your message.
+- **Ctrl+L** picks the model and **Shift+Tab** its effort, as in Pi.
+  **Ctrl+V** sends an image with your message.
 - Edits show as diffs. Checklists, helpers and background commands get their
   own cards.
+- A helper's card follows the helper's own conversation. **Ctrl+O** shows all
+  of it.
 
 ### Steering
 
@@ -64,6 +67,7 @@ Then, in Pi:
 - **Enter** while the agent works steers it after its current step.
 - **Alt+Enter** queues a follow-up instead. **Alt+Q** takes queued follow-ups
   back.
+- Waiting messages show as **Steering** or **Follow-up**, as in Pi's own queue.
 
 ### Governance
 
@@ -93,6 +97,8 @@ Then, in Pi:
 ### Good to know
 
 - Closing Pi doesn't stop the agent.
+- A message Leverage hasn't confirmed goes again by itself. Leverage keeps it
+  once.
 - Pi can't run `!` shell commands in a session yet. Ask the agent instead.
 
 ## Commands
@@ -105,18 +111,18 @@ Then, in Pi:
 | `/leverage` | Find and open a session |
 | `/leverage exit` | Go back to plain Pi |
 | **F1** | Pick a channel for a new session |
-| **F2** | Pick a model |
+| **Ctrl+L** | Pick a model |
+| **Shift+Tab** | Pick the reasoning effort |
 | **F3** | Find and open a session |
 | **F4** | Review what the agent wants to run |
 | **Enter** while the agent works | Steer it after its current step |
 | **Alt+Enter** | Queue a follow-up |
 | **Alt+Q** | Take queued follow-ups back |
 | **Escape** | Stop the agent |
-| `/leverage rename <name>` | Rename the session |
-| `/leverage history` | Read older messages |
-| `/leverage queue <message>` | Send a message after the agent finishes |
+| `/name <name>` | Rename the session |
+| `/tree` | Read older messages |
+| `/compact` | Compact the session's context |
 | `/leverage archive` | Put the session away |
-| `/leverage retry` | Try again when a message didn't send |
 | `/leverage skills` | Pick a skill for your next message |
 | `/leverage connectors` | The apps your workspace connects to |
 

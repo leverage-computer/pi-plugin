@@ -1,7 +1,7 @@
 import { Match } from "effect";
 import WebSocket from "ws";
 import { api } from "../api";
-import { StateError } from "../errors";
+import { StateError, UnconfirmedError } from "../errors";
 import {
   type ClientFrame,
   clientFrameSchema,
@@ -402,11 +402,7 @@ export class WorkspaceSocket {
       });
       const abort = () => {
         cleanup();
-        reject(
-          new StateError(
-            "Send not confirmed. Retry to check the same request.",
-          ),
-        );
+        reject(new UnconfirmedError());
       };
       const cleanup = () => {
         stop();

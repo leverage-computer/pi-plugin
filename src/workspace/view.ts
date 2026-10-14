@@ -19,7 +19,6 @@ import type {
 } from "@earendil-works/pi-durable";
 import { Match } from "effect";
 import { z } from "zod";
-import { toolTitleText } from "../tools";
 import { workspace } from "./api";
 import {
   type Attachment,
@@ -120,10 +119,10 @@ export interface EntryData {
   // A person's message: how far it got, and the app it was sent from.
   inputUuid?: string;
   status?: string;
+  // A waiting message that joins the running turn instead of waiting for it.
+  steer?: boolean;
   client?: string | null;
   attachments?: Attachment[];
-  // A sub-agent's work, one line per step.
-  steps?: string[];
   // A background command or agent keeps running after its call returns.
   background?: boolean;
   // A note the conversation shows as text, such as a stop or an error.
@@ -144,6 +143,23 @@ export interface SessionDocs {
 export type SessionView = Omit<ConversationView, "docs"> & {
   readonly docs: Readonly<SessionDocs>;
 };
+
+/**
+ * A sub-agent's own conversation, as Pi Durable gives each subagent a child
+ * conversation. Its entries are the sub-agent's rows.
+ */
+export type AgentView = Omit<ConversationView, "docs"> & {
+  readonly docs: Readonly<{ "pi.live": LiveState }>;
+};
+
+// A call that started a sub-agent names its conversation in its details, as
+// a Pi Durable subagent tool does with `api.details()`.
+const agentDetails = z.object({ conversationId: z.number() });
+
+/** The conversation a call's details name, if the call started a sub-agent. */
+export function conversationOf(details: unknown): number | undefined {
+  return agentDetails.safeParse(details).data?.conversationId;
+}
 
 const SESSION_DOC: SessionDoc = {
   version: -1,
@@ -326,12 +342,20 @@ export class EntryFold {
   private oldestSeq?: number;
   private nextId = 1;
   private model = "leverage";
+  // Each sub-agent's conversation, by the call that started it.
+  private readonly agents = new Map<string, EntryFold>();
+  // The call that started this conversation, when a sub-agent works in it.
+  private owner?: string;
+  // Conversation IDs, shared by a session and its sub-agents.
+  private ids = { next: 1 };
+  // A sub-agent's running tools. The session keeps its own in its view.
+  readonly live: LiveState = {};
   // Grows with every change to the entries, so a view publishes only real ones.
   revision = 0;
 
   constructor(
     readonly sessionId: string,
-    private readonly conversation: ConversationId = conversationId(0),
+    readonly conversation: ConversationId = conversationId(0),
     private readonly limits: {
       maxEntries?: number;
       maxCharacters?: number;
@@ -345,6 +369,22 @@ export class EntryFold {
   /** The model the session answers with, named on each assistant entry. */
   setModel(model: string | null | undefined): void {
     this.model = model || "leverage";
+    for (const agent of this.agents.values()) {
+      agent.setModel(model);
+    }
+  }
+
+  /** Every sub-agent's conversation, nested ones included, oldest first. */
+  subagents(): EntryFold[] {
+    return [...this.agents.values()].flatMap((fold) => [
+      fold,
+      ...fold.subagents(),
+    ]);
+  }
+
+  /** One sub-agent's conversation, by the ID its call's details name. */
+  subagent(id: number): EntryFold | undefined {
+    return this.subagents().find((fold) => Number(fold.conversation) === id);
   }
 
   private find(key: string): EntryRecord | undefined {
@@ -462,6 +502,7 @@ export class EntryFold {
             : {}),
         ...(input?.authorName ? { authorName: input.authorName } : {}),
         ...(input?.status ? { status: input.status } : {}),
+        ...(input?.intent === "steer" ? { steer: true } : {}),
         ...(input?.client !== undefined ? { client: input.client } : {}),
         ...(attachments.length ? { attachments } : {}),
       },
@@ -510,8 +551,16 @@ export class EntryFold {
 
   /** Grows a streamed message or a running tool's output. */
   delta(delta: TranscriptDelta, live?: Draft<LiveState>): boolean {
-    // A sub-agent's finished rows show as steps of its Task card.
-    if (delta.parentToolUseId || delta.delegatedTaskId) {
+    // A sub-agent streams into its own conversation.
+    const parent =
+      delta.parentToolUseId || this.agentCalls.get(delta.delegatedTaskId ?? "");
+    if (parent && parent !== this.owner) {
+      const agent = this.holder(parent)?.agents.get(parent);
+      return agent
+        ? agent.delta({ ...delta, parentToolUseId: parent }, agent.live)
+        : false;
+    }
+    if (!parent && delta.delegatedTaskId) {
       return false;
     }
     if (delta.kind === "text" || delta.kind === "reasoning") {
@@ -529,14 +578,13 @@ export class EntryFold {
   // Each row kind updates one entry. Rows the conversation does not show are skipped.
   private fold(event: TranscriptEvent, live?: Draft<LiveState>): void {
     const data = event.data;
-    // A sub-agent works inside its Task card, as it does in the web app.
     const parent =
       data.parentToolUseId || this.agentCalls.get(data.delegatedTaskId);
-    if (parent && event.kind !== "task") {
-      this.step(parent, event);
+    if (parent && parent !== this.owner && event.kind !== "task") {
+      this.delegate(parent, event, live);
       return;
     }
-    if (data.delegatedTaskId && event.kind !== "task") {
+    if (!parent && data.delegatedTaskId && event.kind !== "task") {
       return;
     }
     const created = Date.parse(event.createdAt) || 0;
@@ -647,11 +695,14 @@ export class EntryFold {
         // A background command returns at once and keeps running.
         const background = this.running.has(data.toolUseId);
         const placed = this.placement(`result:${callId}`, event);
+        // The call's last running details become its result's, as in Pi Durable.
+        const details = this.details(callId);
         const result: ToolResultMessage = {
           role: "toolResult",
           toolCallId: callId,
           toolName: named,
           content: [{ type: "text", text: toolOutput(data) }],
+          ...(details ? { details } : {}),
           isError: failed,
           timestamp: placed.created,
         };
@@ -717,7 +768,10 @@ export class EntryFold {
               this.callName(call) ?? "tool",
             );
             slot.status = "running";
-            slot.details = { background: true };
+            slot.details = {
+              ...this.details(data.toolUseId),
+              background: true,
+            };
           }
         }
         return;
@@ -839,7 +893,10 @@ export class EntryFold {
     }
     if (background) {
       live.tools[index]!.status = "running";
-      live.tools[index]!.details = { background: true };
+      live.tools[index]!.details = {
+        ...this.details(callId),
+        background: true,
+      };
       return;
     }
     live.tools.splice(index, 1);
@@ -927,34 +984,87 @@ export class EntryFold {
     return "";
   }
 
-  // A sub-agent's row adds a step to the Task call that started it.
-  private step(parent: string, event: TranscriptEvent): void {
-    const call = this.find(`tool:${parent}`);
-    if (!call) {
+  /**
+   * A sub-agent's row goes to the sub-agent's own conversation, as a Pi
+   * Durable subagent works in a child conversation. The session's entries
+   * stay as they were.
+   */
+  private delegate(
+    parent: string,
+    event: TranscriptEvent,
+    live?: Draft<LiveState>,
+  ): void {
+    const holder = this.holder(parent);
+    if (!holder) {
       return;
     }
-    const data = event.data;
-    const line =
-      event.kind === "tool_call"
-        ? toolTitleText(data.name || "tool", data.input)
-        : event.kind === "text" && data.finalized
-          ? (data.content.trim().split("\n")[0] ?? "")
-          : event.kind === "error"
-            ? `Error: ${data.content || "the step failed"}`
-            : "";
-    if (!line) {
-      return;
+    const agent = holder.agent(parent, holder === this ? live : holder.live);
+    // Rows that name only their task still belong to this sub-agent.
+    agent.fold(
+      { ...event, data: { ...event.data, parentToolUseId: parent } },
+      agent.live,
+    );
+    agent.settle();
+  }
+
+  // The conversation that holds a tool call: this one, or a sub-agent's.
+  private holder(callId: string): EntryFold | undefined {
+    if (this.find(`tool:${callId}`)) {
+      return this;
     }
-    const current = entryData(call);
-    const steps = [...(current.steps ?? [])];
-    const index = steps.findIndex((one) => one.startsWith(`${event.id}\u0000`));
-    const stored = `${event.id}\u0000${line}`;
-    if (index >= 0) {
-      steps[index] = stored;
-    } else {
-      steps.push(stored);
+    for (const agent of this.agents.values()) {
+      const found = agent.holder(callId);
+      if (found) {
+        return found;
+      }
     }
-    this.put(this.make(call.kind, { ...current, steps }, call.model));
+    return undefined;
+  }
+
+  /**
+   * The conversation a call's sub-agent works in, made with its first row.
+   * The call names it in its details from then on: the running slot's, then
+   * the result's.
+   */
+  private agent(callId: string, live?: Draft<LiveState>): EntryFold {
+    const existing = this.agents.get(callId);
+    if (existing) {
+      return existing;
+    }
+    const agent = new EntryFold(
+      this.sessionId,
+      conversationId(this.ids.next++),
+      this.limits,
+    );
+    agent.owner = callId;
+    agent.ids = this.ids;
+    agent.model = this.model;
+    this.agents.set(callId, agent);
+    const details = { conversationId: Number(agent.conversation) };
+    const slot = live?.tools?.find((one) => one.callId === callId);
+    if (slot) {
+      const current = slot.details;
+      slot.details = {
+        ...(current && typeof current === "object" && !Array.isArray(current)
+          ? current
+          : {}),
+        ...details,
+      };
+    }
+    const result = this.find(`result:${callId}`);
+    const message = result ? messageOf(result) : undefined;
+    if (result && message?.role === "toolResult") {
+      this.put(
+        this.make(result.kind, entryData(result), [{ ...message, details }]),
+      );
+    }
+    return agent;
+  }
+
+  // What a call's details say about its sub-agent, if it started one.
+  private details(callId: string): JsonObject | undefined {
+    const agent = this.agents.get(callId);
+    return agent ? { conversationId: Number(agent.conversation) } : undefined;
   }
 
   // Keeps the newest entries within the limits.
@@ -977,6 +1087,12 @@ export class EntryFold {
       );
       this.revision++;
     }
+    // A sub-agent's conversation leaves with the call that started it.
+    for (const callId of this.agents.keys()) {
+      if (!keep.has(`tool:${callId}`)) {
+        this.agents.delete(callId);
+      }
+    }
     if (this.keyByRow.size > 4_000) {
       const live = new Set(this.entries.map((entry) => entryData(entry).key));
       for (const [row, key] of this.keyByRow) {
@@ -989,11 +1105,6 @@ export class EntryFold {
       }
     }
   }
-}
-
-/** The steps of a sub-agent's call, without the row IDs that keep them unique. */
-export function stepsOf(data: EntryData): string[] {
-  return (data.steps ?? []).map((step) => step.split("\u0000")[1] ?? step);
 }
 
 /** Whether a person's message is still on its way to the agent. */
@@ -1022,6 +1133,15 @@ export class SessionReplica {
   private refreshAgain = false;
   // The fold revision the view shows.
   private published = 0;
+  // Each sub-agent's view, by its conversation ID, with what it shows.
+  private readonly agents = new Map<
+    number,
+    {
+      state: MutableReplicatedState<AgentView>;
+      revision: number;
+      live: string;
+    }
+  >();
 
   constructor(
     readonly id: string,
@@ -1056,6 +1176,14 @@ export class SessionReplica {
   /** A person's message as this client last saw it. */
   input(uuid: string): SessionInput | undefined {
     return this.inputs.get(uuid);
+  }
+
+  /**
+   * A sub-agent's conversation view, by the ID its call's details name. A
+   * renderer attaches to it as to the session's own view.
+   */
+  conversation(id: number): MutableReplicatedState<AgentView> | undefined {
+    return this.agents.get(id)?.state;
   }
 
   async start(signal: AbortSignal): Promise<void> {
@@ -1239,6 +1367,51 @@ export class SessionReplica {
   /** One atomic change of the view, published to every subscriber. */
   private commit(mutate: (draft: Draft<SessionView>) => void): void {
     this.state.change(BACKGROUND_CONTEXT, mutate);
+    this.publishAgents();
+  }
+
+  // Each sub-agent's view follows its fold. One that did not change keeps its value.
+  private publishAgents(): void {
+    if (this.doc.revoked) {
+      this.agents.clear();
+      return;
+    }
+    const current = new Set<number>();
+    for (const fold of this.fold.subagents()) {
+      const id = Number(fold.conversation);
+      current.add(id);
+      const live = JSON.stringify(fold.live);
+      let known = this.agents.get(id);
+      if (!known) {
+        known = {
+          state: replicatedState<AgentView>({
+            conversation: { id: fold.conversation },
+            entries: [],
+            docs: { "pi.live": {} },
+          }),
+          revision: -1,
+          live: "",
+        };
+        this.agents.set(id, known);
+      }
+      if (known.revision === fold.revision && known.live === live) {
+        continue;
+      }
+      const entries = known.revision !== fold.revision;
+      known.state.change(BACKGROUND_CONTEXT, (draft) => {
+        if (entries) {
+          draft.entries =
+            fold.current() as unknown as Draft<AgentView>["entries"];
+        }
+        draft.docs["pi.live"] = JSON.parse(live) as LiveState;
+      });
+      Object.assign(known, { revision: fold.revision, live });
+    }
+    for (const id of this.agents.keys()) {
+      if (!current.has(id)) {
+        this.agents.delete(id);
+      }
+    }
   }
 
   // The fold's entries become the view's when they changed. The draft clones
@@ -1335,7 +1508,7 @@ export class SessionReplica {
     draft.docs["pi.inbox"] = {
       items: queued.map((input) => ({
         id: input.uuid as unknown as ItemId,
-        mode: "followUp",
+        mode: input.intent === "steer" ? "steer" : "followUp",
         content: input.content,
       })),
     };

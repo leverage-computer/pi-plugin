@@ -66,12 +66,25 @@ export class StateError extends Data.TaggedError("StateError")<{
   }
 }
 
+/**
+ * Leverage did not answer a request in time. It may have stored it, so the
+ * same request goes again, as a Pi Durable submission keeps its request ID.
+ */
+export class UnconfirmedError extends Data.TaggedError("UnconfirmedError")<{
+  message: string;
+}> {
+  constructor() {
+    super({ message: "Leverage has not confirmed the request yet." });
+  }
+}
+
 export type LeverageError =
   | ApiError
   | ProtocolError
   | InputError
   | ConfigError
-  | StateError;
+  | StateError
+  | UnconfirmedError;
 
 /** Turns an abort reason into the error a caller sees. */
 export function failure(reason: unknown): Error {

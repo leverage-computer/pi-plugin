@@ -28,6 +28,8 @@ import {
   saveLogin,
 } from "./config";
 import { chooseDrawer, clean, report, textDrawer } from "./drawers";
+import { UnconfirmedError } from "./errors";
+import type { ModelChoice } from "./interactions";
 import { createEntryComponent } from "./render";
 import {
   DRAFT_ENTRY,
@@ -58,44 +60,84 @@ import {
   describeConnectors,
   filesDrawer,
 } from "./workspace/files";
-import type { SessionDraft, WorkspaceSession } from "./workspace/schema";
+import {
+  type HostedModel,
+  type ProviderFamily,
+  runnableFamilies,
+  type SessionDraft,
+  type WorkspaceSession,
+} from "./workspace/schema";
 import { contextName, editDraft, sessionsDrawer } from "./workspace/ui";
 import { userText } from "./workspace/view";
 
-// F1 and F2 open these draft settings directly.
+// F1 opens these draft settings directly.
 const SETTING_SECTIONS = ["context", "model"] as const;
 const FUNCTION_KEYS = [
   ["f1", "settings context"],
-  ["f2", "settings model"],
   ["f3", "sessions"],
   ["f4", "approvals"],
 ] as const;
-// Pi's own model and session keys open the matching Leverage control.
+// Pi's own session keys open the matching Leverage control.
 const PI_KEYS = [
-  ["app.model.select", "model"],
-  ["app.model.cycleForward", "model"],
-  ["app.model.cycleBackward", "model"],
-  ["app.thinking.cycle", "model"],
   ["app.session.new", "new"],
   ["app.session.resume", "sessions"],
 ] as const;
 const PI_COMMANDS: Record<string, string> = {
-  "/model": "model",
   "/resume": "sessions",
   "/new": "new",
-  "/compact": "compact",
-  "/name": "rename",
-  "/tree": "history",
 };
 // These commands use the open view as it is. The others reconnect after a lost connection.
-const VIEW_COMMANDS = new Set([
-  "stop",
-  "retry",
-  "queue",
-  "compact",
-  "status",
-  "exit",
-]);
+const VIEW_COMMANDS = new Set(["status", "exit"]);
+// Pi's thinking levels that share a name with a Leverage reasoning effort.
+const THINKING_LEVELS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+// Pi needs a model to open its composer before Leverage's models load.
+const PLACEHOLDER_MODEL = {
+  id: "session",
+  name: "Leverage session",
+  reasoning: false,
+  input: ["text", "image"] as ("text" | "image")[],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 200000,
+  maxTokens: 64000,
+};
+
+// The name Pi's session gets while its Leverage session has no title.
+const UNTITLED = "Leverage session";
+
+// The reasoning effort a Pi thinking level stands for on a Leverage model.
+function effortOf(
+  model: { thinkingLevelMap?: Partial<Record<string, string | null>> },
+  level: string,
+): string | undefined {
+  return model.thinkingLevelMap?.[level] ?? undefined;
+}
+
+/**
+ * A Leverage model as a Pi model, so Pi's own model and thinking controls
+ * choose it. Pi offers only the thinking levels Leverage has an effort for.
+ */
+function piModel(model: HostedModel) {
+  return {
+    ...PLACEHOLDER_MODEL,
+    id: model.id,
+    name: model.label,
+    reasoning: model.reasoningEfforts.length > 0,
+    thinkingLevelMap: Object.fromEntries([
+      ["off", null],
+      ...THINKING_LEVELS.map((level) => [
+        level,
+        model.reasoningEfforts.includes(level) ? level : null,
+      ]),
+    ]),
+  };
+}
 // These commands sign in and out, so they never need a connection first.
 const ACCESS_COMMANDS = new Set(["login", "logout"]);
 // Pi creates a new extension instance when it switches sessions.
@@ -196,7 +238,7 @@ async function chooseWorkspace(
   return workspaces.find((one) => `${one.name} (${one.slug})` === picked);
 }
 
-type Interaction = "approvals" | "questions" | "model";
+type Interaction = "approvals" | "questions";
 type Command = (
   ctx: ExtensionCommandContext,
   words: string[],
@@ -204,29 +246,22 @@ type Command = (
 ) => Promise<void>;
 
 export default function leverage(pi: ExtensionAPI): void {
-  // Pi needs a model entry to open its composer without a local provider login.
-  pi.registerProvider("leverage", {
-    name: "Leverage",
-    baseUrl: "https://leverage.invalid",
-    apiKey: "remote-session",
-    api: "openai-completions",
-    models: [
-      {
-        id: "session",
-        name: "Leverage session",
-        reasoning: false,
-        input: ["text", "image"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200000,
-        maxTokens: 64000,
+  // Leverage's models are Pi models of this provider. Leverage runs them, so
+  // Pi never streams from it.
+  const offer = (models: ReturnType<typeof piModel>[]) =>
+    pi.registerProvider("leverage", {
+      name: "Leverage",
+      baseUrl: "https://leverage.invalid",
+      apiKey: "remote-session",
+      api: "openai-completions",
+      models: models.length ? models : [PLACEHOLDER_MODEL],
+      streamSimple: () => {
+        throw new Error(
+          "Use the Leverage composer to send prompts to the remote session.",
+        );
       },
-    ],
-    streamSimple: () => {
-      throw new Error(
-        "Use the Leverage composer to send prompts to the remote session.",
-      );
-    },
-  });
+    });
+  offer([]);
   for (const [name, description] of Object.entries({
     host: "Leverage server origin",
     workspace: "Leverage workspace slug",
@@ -266,6 +301,10 @@ export default function leverage(pi: ExtensionAPI): void {
   let working: BorderStatus | undefined;
   let redrawConversation = () => {};
   let dialogCount = 0;
+  // The Leverage models Pi offers, and the choice Pi shows as selected.
+  let hosted: HostedModel[] = [];
+  let selected = "";
+  let recreating = false;
 
   const flag = (name: string) => {
     const value = pi.getFlag(`leverage-${name}`);
@@ -449,6 +488,135 @@ export default function leverage(pi: ExtensionAPI): void {
   const showInteraction = async (kind: Interaction) => {
     await requireSession().interactions!.show(kind);
   };
+  // Runs what a Pi control does in a Leverage session and reports a failure.
+  // Requests wait to open their dialogs meanwhile.
+  const perform = (
+    ctx: ExtensionContext,
+    opening: number,
+    action: () => Promise<void>,
+  ) => {
+    dialogCount++;
+    void action()
+      .catch((error: unknown) => {
+        if (opening === generation) {
+          report(ctx, error);
+        }
+      })
+      .finally(() => {
+        dialogCount--;
+      });
+  };
+  // A message Leverage did not store goes back into the composer to send again.
+  // One it has not confirmed goes again on its own.
+  const restore = (
+    error: unknown,
+    text: string,
+    editor: { getText(): string; setText(text: string): void },
+  ) => {
+    if (!(error instanceof UnconfirmedError) && !editor.getText().trim()) {
+      editor.setText(text);
+    }
+  };
+  // Pi's history of the session: Leverage's older messages, page by page.
+  const history = async (ctx: ExtensionContext) => {
+    const current = requireSession();
+    const { session, signal } = current;
+    const snapshot = await workspace.bootstrap(session.id, signal);
+    await viewRemoteHistory(ctx, session, signal, {
+      messages: snapshot.messages,
+      members: current.doc.members,
+      viewerId: current.doc.userId,
+    });
+  };
+  /**
+   * Offers Leverage's models to Pi's model controls: the session's family,
+   * or every family Leverage runs for a draft.
+   */
+  const offerModels = async (family?: ProviderFamily) => {
+    const [models, providers] = await Promise.all([
+      workspace.models(lifetime.signal),
+      family ? undefined : workspace.providers(lifetime.signal),
+    ]);
+    const runnable = providers
+      ? runnableFamilies(providers, models)
+      : undefined;
+    hosted = models.filter(
+      (one) => !one.legacy && (runnable?.[one.family] ?? one.family === family),
+    );
+    offer(hosted.map(piModel));
+  };
+  // Shows a model and effort as Pi's selection, so Pi's controls start there.
+  const select = async (choice: ModelChoice, ctx: ExtensionContext) => {
+    const model = ctx.modelRegistry.find("leverage", choice.model);
+    if (!model) {
+      return;
+    }
+    selected = `${choice.model}/${choice.reasoningEffort ?? ""}`;
+    try {
+      await pi.setModel(model);
+      const level = THINKING_LEVELS.find(
+        (one) => one === choice.reasoningEffort,
+      );
+      if (level) {
+        pi.setThinkingLevel(level);
+      }
+    } catch {
+      // A Pi without model controls keeps its own selection.
+    }
+  };
+  // The model and effort the next message uses, as Leverage knows them.
+  const current = (): ModelChoice | undefined => {
+    const model = view
+      ? (view.nextModel?.model ?? view.session.model)
+      : draft?.model;
+    const reasoningEffort = view
+      ? view.nextModel
+        ? view.nextModel.reasoningEffort
+        : view.session.reasoningEffort
+      : draft?.reasoningEffort;
+    return model
+      ? { model, ...(reasoningEffort ? { reasoningEffort } : {}) }
+      : undefined;
+  };
+  // A model change Leverage reports, by anyone, shows in Pi's controls.
+  const follow = (ctx: ExtensionContext) => {
+    const choice = current();
+    if (!choice || view?.nextModel) {
+      return;
+    }
+    if (`${choice.model}/${choice.reasoningEffort ?? ""}` !== selected) {
+      void select(choice, ctx);
+    }
+  };
+  /**
+   * Pi's model and thinking controls choose the model of the next message, as
+   * a Pi Durable conversation keeps its model in its agent document.
+   */
+  const choose = (
+    model: string,
+    reasoningEffort: string | undefined,
+    ctx: ExtensionContext,
+  ) => {
+    const picked = hosted.find((one) => one.id === model);
+    if (!picked) {
+      return;
+    }
+    selected = `${model}/${reasoningEffort ?? ""}`;
+    if (view) {
+      const { session } = view;
+      const same =
+        model === session.model &&
+        (reasoningEffort ?? null) === (session.reasoningEffort ?? null);
+      view.nextModel = same
+        ? undefined
+        : { model, ...(reasoningEffort ? { reasoningEffort } : {}) };
+    } else if (draft) {
+      draft.model = model;
+      draft.providerFamily = picked.family;
+      draft.reasoningEffort = reasoningEffort;
+    }
+    status(ctx);
+  };
 
   const attach = async (session: WorkspaceSession, ctx: ExtensionContext) => {
     ensureApi();
@@ -456,11 +624,21 @@ export default function leverage(pi: ExtensionAPI): void {
     view?.close();
     composerKey = `${api.connection.host}/${api.connection.workspace}/${session.id}`;
     view = new SessionView(pi, ctx, session, owner.signal, {
-      changed: () => status(ctx),
+      changed: () => {
+        status(ctx);
+        follow(ctx);
+      },
       idle: () => !busy() && !creating,
       opened: () => redrawConversation(),
       revoked: () => owner.abort(),
     });
+    void offerModels(session.providerFamily)
+      .then(() => follow(ctx))
+      .catch((error: unknown) => {
+        if (!owner.signal.aborted) {
+          report(ctx, error);
+        }
+      });
     await view.open(linkFor(session));
   };
   const switchTo = async (
@@ -539,9 +717,7 @@ export default function leverage(pi: ExtensionAPI): void {
       );
     }
     if (pendingCreation && pendingCreation.id !== prompt.id) {
-      throw new Error(
-        "The previous setup is unconfirmed. Use /leverage retry first.",
-      );
+      throw new Error("Wait until Leverage confirms the new session.");
     }
     const opening = generation;
     creating = true;
@@ -549,9 +725,10 @@ export default function leverage(pi: ExtensionAPI): void {
     status(ctx);
     try {
       // A created draft needs no upload: its session already has the message.
+      // Another attempt reuses the files the first one uploaded.
       const attachmentIds = draft.sessionId
         ? []
-        : await uploadFiles(prompt, lifetime.signal);
+        : (prompt.attachmentIds ??= await uploadFiles(prompt, lifetime.signal));
       const id = await workspace.create(
         draft,
         {
@@ -576,11 +753,49 @@ export default function leverage(pi: ExtensionAPI): void {
         draft = undefined;
         pendingCreation = undefined;
       }
+    } catch (error) {
+      if (opening === generation && pendingCreation === prompt) {
+        if (error instanceof UnconfirmedError) {
+          void recreate(prompt, ctx, opening);
+        } else {
+          pendingCreation = undefined;
+        }
+      }
+      throw error;
     } finally {
       if (opening === generation) {
         creating = false;
         status(ctx);
       }
+    }
+  };
+  // An unconfirmed setup goes again with the same request ID until Leverage
+  // answers, so Leverage makes one session.
+  const recreate = async (
+    prompt: Prompt,
+    ctx: ExtensionContext,
+    opening: number,
+  ) => {
+    if (recreating) {
+      return;
+    }
+    recreating = true;
+    try {
+      let wait = 1_000;
+      while (opening === generation && pendingCreation === prompt) {
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        wait = Math.min(wait * 2, 30_000);
+        if (opening !== generation || pendingCreation !== prompt || creating) {
+          continue;
+        }
+        await createAndSend(prompt, ctx).catch((error: unknown) => {
+          if (!(error instanceof UnconfirmedError) && opening === generation) {
+            report(ctx, error);
+          }
+        });
+      }
+    } finally {
+      recreating = false;
     }
   };
   // A new session starts as a local draft. --leverage-directory can name its channel.
@@ -638,6 +853,10 @@ export default function leverage(pi: ExtensionAPI): void {
       draft = loaded;
       draftContext = contextName(loaded, channels);
       status(ctx);
+      await offerModels();
+      if (opening === generation) {
+        follow(ctx);
+      }
     })().catch((error: unknown) => {
       if (opening === generation && !lifetime.signal.aborted) {
         failure =
@@ -711,9 +930,20 @@ export default function leverage(pi: ExtensionAPI): void {
             void submit({ text }, ctx, true).catch((error: unknown) => {
               if (opening === generation) {
                 report(ctx, error);
+                restore(error, text, editor);
               }
             });
           }
+          return;
+        }
+        // Pi's tree key shows the session's history, which Leverage keeps.
+        if (
+          !completing &&
+          !busy() &&
+          view &&
+          keys.matches(data, "app.session.tree")
+        ) {
+          perform(ctx, opening, () => history(ctx));
           return;
         }
         if (
@@ -729,7 +959,19 @@ export default function leverage(pi: ExtensionAPI): void {
           return;
         }
         if (matchesKey(data, "enter")) {
-          const [command, ...args] = editor.getText().trim().split(/\s+/);
+          const typed = editor.getText().trim();
+          const [command, ...args] = typed.split(/\s+/);
+          // Pi's /compact and /tree act on the session Leverage keeps.
+          if (view && (command === "/compact" || command === "/tree")) {
+            editor.addToHistory?.(typed);
+            editor.setText("");
+            perform(ctx, opening, () =>
+              command === "/tree"
+                ? history(ctx)
+                : requireSession(true).compact(),
+            );
+            return;
+          }
           if (command && PI_COMMANDS[command]) {
             editor.setText(
               `/leverage ${PI_COMMANDS[command]} ${args.join(" ")}`.trim(),
@@ -763,49 +1005,28 @@ export default function leverage(pi: ExtensionAPI): void {
       );
       return;
     }
-    const picked =
-      section === "model"
-        ? "model"
-        : section === "context"
-          ? "info"
-          : await chooseDrawer(ctx, {
-              title: "Session settings",
-              items: [
-                {
-                  value: "model",
-                  label: "Model and reasoning",
-                  detail: view.model,
-                },
-                { value: "info", label: "Session details" },
-              ],
-              signal: lifetime.signal,
-            });
-    if (picked === "model") {
-      await showInteraction("model");
-    }
-    if (picked === "info") {
-      await textDrawer(ctx, {
-        title: "Session details",
-        read: () =>
-          [
-            view?.session.title || "Untitled session",
-            view?.place,
-            view?.session.id,
-            view?.model,
-            "",
-            "People",
-            ...(view ? roster(view.doc).map((one) => personText(one)) : []),
-          ]
-            .filter((line) => line !== undefined)
-            .join("\n"),
-        signal: lifetime.signal,
-      });
-    }
+    // A session's model is Pi's to choose, so F1 shows the session's details.
+    await textDrawer(ctx, {
+      title: "Session details",
+      read: () =>
+        [
+          view?.session.title || "Untitled session",
+          view?.place,
+          view?.session.id,
+          view?.model,
+          "",
+          "People",
+          ...(view ? roster(view.doc).map((one) => personText(one)) : []),
+        ]
+          .filter((line) => line !== undefined)
+          .join("\n"),
+      signal: lifetime.signal,
+    });
   };
   // Reads the session again after its title or archive state changes.
   const reload = async (current: SessionView, ctx: ExtensionContext) => {
     await current.sync();
-    pi.setSessionName(current.session.title || "Leverage session");
+    pi.setSessionName(current.session.title || UNTITLED);
     status(ctx);
   };
 
@@ -826,27 +1047,6 @@ export default function leverage(pi: ExtensionAPI): void {
   };
 
   const commands: Record<string, Command> = {
-    stop,
-    retry: async (ctx) => {
-      if (pendingCreation && draft) {
-        await createAndSend(pendingCreation, ctx);
-        return;
-      }
-      const prompt = view?.failedPrompt;
-      if (!prompt) {
-        throw new Error("There is no unconfirmed message to retry.");
-      }
-      await requireSession(true).send(prompt);
-    },
-    queue: async (ctx, words) => {
-      if (!words.length) {
-        throw new Error("Use /leverage queue <message>.");
-      }
-      await submit({ text: words.join(" ") }, ctx, true);
-    },
-    compact: async () => {
-      await requireSession(true).compact();
-    },
     status: async (ctx) => {
       ctx.ui.notify(
         clean(
@@ -926,8 +1126,6 @@ export default function leverage(pi: ExtensionAPI): void {
         ctx,
         SETTING_SECTIONS.find((one) => one === words[0]),
       ),
-    model: (ctx) =>
-      view ? showInteraction("model") : editSettings(ctx, "model"),
     approvals: () => showInteraction("approvals"),
     questions: () => showInteraction("questions"),
     files: async (ctx) => {
@@ -982,28 +1180,6 @@ export default function leverage(pi: ExtensionAPI): void {
           ? `Use the "${picked}" skill. `
           : `/${picked} `,
       );
-    },
-    history: async (ctx) => {
-      const current = requireSession();
-      const { session, signal } = current;
-      const snapshot = await workspace.bootstrap(session.id, signal);
-      await viewRemoteHistory(ctx, session, signal, {
-        messages: snapshot.messages,
-        members: current.doc.members,
-        viewerId: current.doc.userId,
-      });
-    },
-    rename: async (ctx, words) => {
-      const current = requireSession(true);
-      if (!words.length) {
-        throw new Error("Use /leverage rename <title>.");
-      }
-      await workspace.rename(
-        current.session.id,
-        words.join(" "),
-        current.signal,
-      );
-      await reload(current, ctx);
     },
     archive: async (ctx) => {
       const current = requireSession(true);
@@ -1078,6 +1254,10 @@ export default function leverage(pi: ExtensionAPI): void {
     } catch (error) {
       if (!lifetime.signal.aborted) {
         report(ctx, error);
+        restore(error, event.text, {
+          getText: () => ctx.ui.getEditorText(),
+          setText: (text) => ctx.ui.setEditorText(text),
+        });
       }
     }
     // Pi continues to its local model if an input handler throws.
@@ -1194,16 +1374,59 @@ export default function leverage(pi: ExtensionAPI): void {
     }
     return { cancel: true };
   });
-  // A Leverage session has one line of history, so Pi's tree has nowhere to go.
+  // A Leverage session has one line of history, so Pi's tree shows that history.
   pi.on("session_before_tree", (_event, ctx) => {
     if (!active) {
       return;
     }
-    ctx.ui.notify(
-      "Leverage sessions have one history. Use /leverage history to read it.",
-      "info",
-    );
+    if (view) {
+      perform(ctx, generation, () => history(ctx));
+    }
     return { cancel: true };
+  });
+  // Pi's /name names the Leverage session, or the session a draft creates.
+  pi.on("session_info_changed", async (event, ctx) => {
+    const name = event.name?.trim();
+    if (!active || !name) {
+      return;
+    }
+    if (!view) {
+      if (draft) {
+        draft.title = name;
+      }
+      return;
+    }
+    // The view names Pi's session after Leverage's, which needs no rename.
+    const { title } = view.session;
+    if (!view.ready || name === title || (!title && name === UNTITLED)) {
+      return;
+    }
+    try {
+      await workspace.rename(view.session.id, name, view.signal);
+      await reload(view, ctx);
+    } catch (error) {
+      report(ctx, error);
+    }
+  });
+  pi.on("model_select", (event, ctx) => {
+    if (!active) {
+      return;
+    }
+    if (event.model.provider !== "leverage") {
+      ctx.ui.notify("A Leverage session runs Leverage's models.", "info");
+      const choice = current();
+      if (choice) {
+        void select(choice, ctx);
+      }
+      return;
+    }
+    choose(event.model.id, effortOf(event.model, pi.getThinkingLevel()), ctx);
+  });
+  pi.on("thinking_level_select", (event, ctx) => {
+    if (!active || ctx.model?.provider !== "leverage") {
+      return;
+    }
+    choose(ctx.model.id, effortOf(ctx.model, event.level), ctx);
   });
   pi.on("session_before_fork", (_event, ctx) => {
     if (!active) {
@@ -1233,7 +1456,7 @@ export default function leverage(pi: ExtensionAPI): void {
   });
   pi.registerCommand("leverage", {
     description:
-      "Open Leverage: new, sessions, files, outputs, changes, approvals, skills, history, model, exit, login, logout",
+      "Open Leverage: new, sessions, files, outputs, changes, approvals, skills, exit, login, logout",
     handler: async (args, ctx) => {
       const opening = generation;
       dialogCount++;
@@ -1250,7 +1473,7 @@ export default function leverage(pi: ExtensionAPI): void {
           : undefined;
         if (!command) {
           throw new Error(
-            "Use /leverage sessions, new, open, history, files, outputs, changes, connectors, skills, stop, queue, approvals, questions, model, compact, rename, archive, restore, exit, login, or logout.",
+            "Use /leverage sessions, new, open, files, outputs, changes, connectors, skills, approvals, questions, archive, restore, exit, login, or logout.",
           );
         }
         await command(ctx, words, opening);

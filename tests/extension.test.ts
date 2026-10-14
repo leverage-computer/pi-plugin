@@ -32,6 +32,7 @@ import type { SessionDoc } from "../src/workspace/view";
 import {
   eventually,
   exampleSession,
+  input,
   invocation,
   MEMBER,
   SESSION,
@@ -79,6 +80,8 @@ async function load(
     onPrompt?: () => void;
     sendUserMessage?: ExtensionActions["sendUserMessage"];
     activeTools?: (tools: string[]) => void;
+    // The model Pi has selected, as its model controls left it.
+    model?: () => unknown;
   } = {},
 ) {
   const directory = options.manager?.getCwd() ?? temporaryDirectory();
@@ -129,7 +132,7 @@ async function load(
       },
     },
     {
-      getModel: () => undefined,
+      getModel: () => options.model?.() as never,
       getScopedModels: () => [],
       isIdle: () => true,
       isProjectTrusted: () => true,
@@ -207,6 +210,82 @@ function commandActions(
     reload: async () => {},
     ...overrides,
   });
+}
+
+/**
+ * Pi's terminal UI for one runner: its composer with Pi's keys, the status
+ * widgets it draws, its notices, and the overlays it opens.
+ */
+function composer(runner: ExtensionRunner) {
+  let factory: Parameters<ExtensionUIContext["setEditorComponent"]>[0];
+  const widgets: string[] = [];
+  const notices: string[] = [];
+  const overlays: string[] = [];
+  runner.setUIContext(
+    {
+      ...runner.getUIContext(),
+      setEditorComponent: (value) => {
+        factory = value;
+      },
+      notify: (message) => {
+        notices.push(message);
+      },
+      setWidget: (_key, value) => {
+        if (typeof value === "function") {
+          widgets.push(
+            stripVTControlCharacters(
+              value({ requestRender() {} } as never, {} as never)
+                .render(120)
+                .join("\n"),
+            ),
+          );
+        }
+      },
+      // An overlay draws once, then Escape closes it.
+      async custom<T>(
+        create: Parameters<ExtensionUIContext["custom"]>[0],
+      ): Promise<T> {
+        let result!: T;
+        const component = await create(
+          { requestRender() {} } as never,
+          runner.getUIContext().theme,
+          {} as never,
+          (value: unknown) => {
+            result = value as T;
+          },
+        );
+        overlays.push(
+          stripVTControlCharacters(component.render(100).join("\n")),
+        );
+        component.handleInput?.("\u001b");
+        component.dispose?.();
+        return result;
+      },
+    },
+    "tui",
+  );
+  // Pi's keys for a follow-up, for the queue and for the session tree.
+  const keys = {
+    matches: (data: string, action: string) =>
+      (action === "app.message.followUp" && data === "\u001b\r") ||
+      (action === "app.message.dequeue" && data === "\u001bq") ||
+      (action === "app.session.tree" && data === "\u001bt"),
+  } as never;
+  const theme = {
+    fg: (_color: string, text: string) => text,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+    borderColor: (text: string) => text,
+    selectList: getSelectListTheme(),
+  } as never;
+  return {
+    widgets,
+    notices,
+    overlays,
+    latest: () => widgets.at(-1) ?? "",
+    editor: () => factory!({ requestRender() {} } as never, theme, keys),
+  };
 }
 
 async function command(runner: ExtensionRunner, text: string) {
@@ -689,42 +768,105 @@ describe("Pi hosted frontend", () => {
     ]);
   });
 
-  test("queue, explicit retry, and stop use the shared session API without duplicate messages", async () => {
+  test("Escape stops the turn, and a message Leverage refuses goes back into the composer", async () => {
     const f = leverage();
     f.update({ status: "active", turnId: "turn_1" });
     const runner = await load();
     f.configure(runner, SESSION);
-    commandActions(runner);
+    const ui = composer(runner);
     await runner.emit({ type: "session_start", reason: "startup" });
-    await command(runner, "queue Check this after the current task");
-    expect(transcript(runner)).toContain("Queued");
+    await eventually(() => ui.latest().includes("Only you here"));
+    const editor = ui.editor();
     f.state.dropMessageAck = true;
-    const refused = runner.emitInput(
-      "Try exactly once until I ask",
-      undefined,
-      "interactive",
-    );
-    await f.refuse(2, "Runner unavailable");
-    await refused;
-    f.state.dropMessageAck = false;
-    await command(runner, "retry");
-    const messages = f.sent("session.message");
-    expect(messages).toHaveLength(3);
-    expect(messages[0]).toMatchObject({
-      content: "Check this after the current task",
-      delivery: "queue",
-    });
-    expect(messages[1]).toMatchObject({ delivery: "send" });
-    // A retry resends the same request, so Leverage stores it once.
-    expect(messages[2]).toEqual(messages[1]!);
-    expect(historyRows(runner)).toHaveLength(2);
-    await command(runner, "stop");
+    editor.setText("Try exactly once");
+    editor.handleInput?.("\u001b\r");
+    await f.refuse(1, "Runner unavailable");
+    await eventually(() => editor.getText() === "Try exactly once");
+    expect(ui.notices).toContain("Runner unavailable");
+    // A refused message is not stored, so Pi sends nothing again by itself.
+    expect(f.sent("session.message")).toHaveLength(1);
+    editor.setText("");
+    editor.handleInput?.("\u001b");
+    await eventually(() => f.sent("session.stop").length === 1);
     expect(f.sent("session.stop")).toEqual([
       expect.objectContaining({ sessionId: SESSION, turnId: "turn_1" }),
     ]);
-    await runner.emit({ type: "session_shutdown", reason: "quit" });
-    await eventually(() => f.connections.size === 0);
-    expect(f.sent("session.stop")).toHaveLength(1);
+  });
+
+  test("a message Leverage has not confirmed goes again with the same ID until it is stored once", async () => {
+    const f = leverage();
+    f.update({ status: "active", turnId: "turn_1" });
+    const runner = await load();
+    f.configure(runner, SESSION);
+    const ui = composer(runner);
+    await runner.emit({ type: "session_start", reason: "startup" });
+    await eventually(() => ui.latest().includes("Only you here"));
+    f.state.dropMessageAck = true;
+    // Pi waits as long as Leverage takes to confirm a message, then says so.
+    await runner.emitInput("Check the deploy", undefined, "interactive");
+    expect(ui.latest()).toContain("Send not confirmed");
+    f.state.dropMessageAck = false;
+    await eventually(() => !ui.latest().includes("Send not confirmed"));
+    const [first, again] = f.sent("session.message");
+    expect(again).toEqual(first!);
+    expect(historyRows(runner)).toHaveLength(1);
+    expect(transcript(runner)).toContain("Check the deploy");
+  }, 45_000);
+
+  test("Pi's /compact, /tree, /name and model controls act on the Leverage session", async () => {
+    const f = leverage();
+    let model: unknown;
+    const runner = await load({ model: () => model });
+    f.configure(runner, SESSION);
+    const ui = composer(runner);
+    await runner.emit({ type: "session_start", reason: "startup" });
+    await eventually(() => ui.latest().includes("Only you here"));
+    const editor = ui.editor();
+    editor.setText("/compact");
+    editor.handleInput?.("\r");
+    await eventually(() => f.sent("session.compact").length === 1);
+    expect(editor.getText()).toBe("");
+    // Pi's /tree and its tree key show the session's older messages.
+    f.emit("text", { content: "An older answer", eventId: "evt_old" });
+    editor.setText("/tree");
+    editor.handleInput?.("\r");
+    await eventually(() => ui.overlays.length === 1);
+    expect(ui.overlays[0]).toContain("An older answer");
+    editor.handleInput?.("\u001bt");
+    await eventually(() => ui.overlays.length === 2);
+    // Pi's /name renames the session. Leverage's own title needs no rename.
+    await runner.emit({ type: "session_info_changed", name: "Shared work" });
+    await runner.emit({ type: "session_info_changed", name: "Deploy work" });
+    await eventually(() => f.sent("session.rename").length === 1);
+    expect(f.sent("session.rename")[0]).toMatchObject({
+      sessionId: SESSION,
+      title: "Deploy work",
+    });
+    // Pi's model selector offers Leverage's models, and its thinking key
+    // picks an effort. Both go with the next message.
+    const registry = runner.createContext().modelRegistry;
+    await eventually(() => !!registry.find("leverage", "hosted-model"));
+    model = registry.find("leverage", "hosted-model");
+    // The session runs it at high effort, so only another effort is a change.
+    await runner.emit({
+      type: "thinking_level_select",
+      level: "low",
+      previousLevel: "high",
+    });
+    await runner.emitInput("Use less effort", undefined, "interactive");
+    expect(f.sent("session.message").at(-1)).toMatchObject({
+      content: "Use less effort",
+      model: "hosted-model",
+      reasoningEffort: "low",
+    });
+    // A model of another provider is not Leverage's to run.
+    await runner.emit({
+      type: "model_select",
+      model: { ...(model as object), provider: "anthropic", id: "other" },
+      previousModel: model,
+      source: "set",
+    } as never);
+    expect(ui.notices).toContain("A Leverage session runs Leverage's models.");
   });
 
   test("a pending approval opens its dialog on its own, once, and Escape leaves it pending", async () => {
@@ -1057,6 +1199,102 @@ describe("Steering", () => {
       () => editor.getText() === "Then run the full suite\n\nand lint",
     );
     await eventually(() => !latest().includes("Follow-up:"));
+  });
+
+  test("the inbox shows a waiting steer as Steering and a follow-up as Follow-up", async () => {
+    const f = leverage();
+    f.update({ status: "active", turnId: "turn_1" });
+    const runner = await load();
+    f.configure(runner, SESSION);
+    const widgets: string[] = [];
+    runner.setUIContext(
+      {
+        ...runner.getUIContext(),
+        setWidget: (_key, value) => {
+          if (typeof value === "function") {
+            widgets.push(
+              stripVTControlCharacters(
+                value({ requestRender() {} } as never, {} as never)
+                  .render(120)
+                  .join("\n"),
+              ),
+            );
+          }
+        },
+      },
+      "tui",
+    );
+    await runner.emit({ type: "session_start", reason: "startup" });
+    const latest = () => widgets.at(-1) ?? "";
+    // Leverage holds a steer until the agent's next step, and a follow-up
+    // until the turn ends. Pi lists both, as it lists its own queue.
+    const steer = input("Skip the e2e tests", {
+      status: "queued",
+      intent: "steer",
+      queuePosition: 1,
+    });
+    const followUp = input("Then run the linter", {
+      status: "queued",
+      intent: "turn",
+      queuePosition: 2,
+    });
+    f.state.nativeMessages.push(steer, followUp);
+    f.state.version++;
+    f.publish({
+      type: "session.messages.updated",
+      _topic: "session",
+      sessionId: SESSION,
+      version: f.state.version,
+      messages: [steer, followUp],
+    });
+    await eventually(() => latest().includes("Steering: Skip the e2e tests"));
+    expect(latest()).toContain("Follow-up: Then run the linter");
+    expect(transcript(runner)).toContain("Steering");
+    expect(transcript(runner)).toContain("Queued");
+  });
+});
+
+describe("Sub-agents", () => {
+  test("a Task card follows the sub-agent's own conversation as it works", async () => {
+    const f = leverage();
+    f.update({ status: "active", turnId: "turn_1" });
+    f.emit("tool_call", {
+      toolUseId: "toolu_task",
+      name: "Task",
+      input: { description: "Find flaky tests", subagent_type: "Explore" },
+    });
+    f.emit("task", {
+      taskId: "task_1",
+      taskKind: "agent",
+      phase: "started",
+      toolUseId: "toolu_task",
+    });
+    f.emit("tool_call", {
+      toolUseId: "toolu_grep",
+      name: "Grep",
+      input: { pattern: "sleep(" },
+      parentToolUseId: "toolu_task",
+    });
+    f.emit("tool_result", {
+      toolUseId: "toolu_grep",
+      content: "tests/cart.test.ts:12",
+      parentToolUseId: "toolu_task",
+    });
+    const runner = await load();
+    f.configure(runner, SESSION);
+    await runner.emit({ type: "session_start", reason: "startup" });
+    await eventually(() => transcript(runner).includes("→ Grep sleep("));
+    // The session has only the Task card. The child's rows are its own.
+    expect(historyRows(runner)).toHaveLength(1);
+    expect(transcript(runner)).not.toContain("tests/cart.test.ts:12");
+    f.emit("text", {
+      content: "Found one flaky test",
+      eventId: "child_text",
+      finalized: true,
+      delegatedTaskId: "task_1",
+    });
+    await eventually(() => transcript(runner).includes("Found one flaky test"));
+    expect(historyRows(runner)).toHaveLength(1);
   });
 });
 
