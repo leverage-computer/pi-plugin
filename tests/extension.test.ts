@@ -622,7 +622,7 @@ describe("Pi hosted frontend", () => {
     ).toBeUndefined();
   });
 
-  test("the first prompt creates the draft's session with its title, then sends the prompt", async () => {
+  test("the first prompt and its image create the draft's session with its title", async () => {
     const f = leverage();
     const runner = await load();
     f.configure(runner);
@@ -633,24 +633,26 @@ describe("Pi hosted frontend", () => {
       },
     });
     await command(runner, "new Explore the project");
-    await runner.emitInput("Map the modules", undefined, "interactive");
+    await runner.emitInput(
+      "Map the modules",
+      [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+      "interactive",
+    );
     expect(f.state.createCount).toBe(1);
-    expect(f.sent("session.create")).toEqual([
-      expect.objectContaining({ title: "Explore the project", prompt: "" }),
+    // The image is uploaded first, then the create names its attachment.
+    expect(f.uploads).toEqual([
+      { id: expect.any(String), bytes: 5, completed: true },
     ]);
-    expect(f.sent("session.message")).toEqual([
+    expect(f.sent("session.create")).toEqual([
       expect.objectContaining({
-        sessionId: SESSION,
+        title: "Explore the project",
         content: "Map the modules",
-        delivery: "queue",
+        attachmentIds: [f.uploads[0]?.id],
+        client: "pi",
       }),
     ]);
-    // The create frame goes out before the message that needs its session.
-    expect(
-      f.frames.findIndex((frame) => frame.type === "session.create"),
-    ).toBeLessThan(
-      f.frames.findIndex((frame) => frame.type === "session.message"),
-    );
+    // The session starts with the prompt, so it is not sent again.
+    expect(f.sent("session.message")).toEqual([]);
     expect(
       sessionLink(runner.createContext().sessionManager.getBranch())?.sessionId,
     ).toBe(SESSION);

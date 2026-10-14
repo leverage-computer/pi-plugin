@@ -203,7 +203,7 @@ describe("Session view entries", () => {
     const message = input("Canonical content", {
       authorId: "bob",
       authorName: "Old name",
-      harness: "codex",
+      client: "codex",
       status: "consumed",
     });
     const people = { members: [{ id: "bob", name: "Bob" }], viewerId: "alice" };
@@ -222,10 +222,10 @@ describe("Session view entries", () => {
     const text = shown(f.shown(canonical!, people));
     expect(text).toContain("Bob");
     expect(text).toContain("Sent from Codex");
-    const sentFrom = (harness: string) =>
+    const sentFrom = (client: string) =>
       shown(
         f.shown(
-          { ...canonical!, data: { ...entryData(canonical!), harness } },
+          { ...canonical!, data: { ...entryData(canonical!), client } },
           people,
         ),
       );
@@ -239,7 +239,7 @@ describe("Session view entries", () => {
     expect(text).not.toContain("Old name");
     expect(text).not.toContain("(you)");
     expect(entryData(unknown!).authorId).toBeUndefined();
-    expect(entryData(unknown!).harness).toBeUndefined();
+    expect(entryData(unknown!).client).toBeUndefined();
     expect(f.text(unknown!, people)).toStartWith("User\n");
   });
 

@@ -121,7 +121,7 @@ export interface EntryData {
   status?: string;
   // A waiting message that joins the running turn instead of waiting for it.
   steer?: boolean;
-  harness?: string | null;
+  client?: string | null;
   attachments?: Attachment[];
   // A background command or agent keeps running after its call returns.
   background?: boolean;
@@ -503,7 +503,7 @@ export class EntryFold {
         ...(input?.authorName ? { authorName: input.authorName } : {}),
         ...(input?.status ? { status: input.status } : {}),
         ...(input?.intent === "steer" ? { steer: true } : {}),
-        ...(input?.harness !== undefined ? { harness: input.harness } : {}),
+        ...(input?.client !== undefined ? { client: input.client } : {}),
         ...(attachments.length ? { attachments } : {}),
       },
       [user],

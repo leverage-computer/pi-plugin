@@ -8,6 +8,9 @@ import {
   workspaceFixture,
 } from "./fixture";
 
+// Leverage starts a session with its first message.
+const FIRST = { content: "Map the modules" };
+
 const fixtures: ReturnType<typeof workspaceFixture>[] = [];
 afterEach(async () => {
   for (const fixture of fixtures.splice(0)) {
@@ -21,19 +24,23 @@ function fixture(extra?: Parameters<typeof workspaceFixture>[0]) {
   return value;
 }
 
-test("creating a session sends its title with the empty first message", async () => {
+test("creating a session sends its title with its first message", async () => {
   const f = fixture();
   const api = f.client();
   const draft = api.draft();
   draft.title = "  Named   draft ";
-  expect(await api.create(draft, new AbortController().signal)).toBe(SESSION);
+  expect(await api.create(draft, FIRST, new AbortController().signal)).toBe(
+    SESSION,
+  );
   const create = f.frames.find((frame) => frame.type === "session.create")!;
-  expect(create.prompt).toBe("");
+  expect(create.content).toBe("Map the modules");
   expect(create.title).toBe("Named draft");
-  expect(create.harness).toBe("pi");
+  expect(create.client).toBe("pi");
   expect(f.session.title).toBe("Named draft");
   // A created draft reuses its session instead of asking for another.
-  expect(await api.create(draft, new AbortController().signal)).toBe(SESSION);
+  expect(await api.create(draft, FIRST, new AbortController().signal)).toBe(
+    SESSION,
+  );
   expect(f.state.createCount).toBe(1);
 });
 
@@ -44,9 +51,9 @@ test("a default-model session is created even when the model catalog is missing"
       : undefined,
   );
   const api = f.client();
-  expect(await api.create(api.draft(), new AbortController().signal)).toBe(
-    SESSION,
-  );
+  expect(
+    await api.create(api.draft(), FIRST, new AbortController().signal),
+  ).toBe(SESSION);
   expect(f.state.createCount).toBe(1);
   expect(f.requests.some((r) => r.path.endsWith("/provider-models"))).toBe(
     false,
@@ -87,13 +94,13 @@ test("a lost creation acknowledgement retries the stable request ID without dupl
   const draft = api.draft();
   f.state.dropCreated = true;
   const life = new AbortController();
-  const attempt = api.create(draft, life.signal);
+  const attempt = api.create(draft, FIRST, life.signal);
   const failure = rejects(attempt, /not confirmed/);
   await eventually(() => f.state.createCount === 1);
   life.abort();
   await failure;
   expect(draft.sessionId).toBeUndefined();
-  await api.create(draft, new AbortController().signal);
+  await api.create(draft, FIRST, new AbortController().signal);
   expect(f.state.createCount).toBe(1);
   const ids = f.frames
     .filter((e) => e.type === "session.create")
@@ -107,20 +114,20 @@ test("revalidates removed channels, unavailable providers, and unsupported reaso
   const draft = api.draft();
   const signal = new AbortController().signal;
   draft.context = { type: "channel", channelId: "removed" };
-  await rejects(api.create(draft, signal), /channel/);
+  await rejects(api.create(draft, FIRST, signal), /channel/);
   draft.context = { type: "none" };
   draft.providerFamily = "codex";
-  await rejects(api.create(draft, signal), /unavailable/);
+  await rejects(api.create(draft, FIRST, signal), /unavailable/);
   draft.providerFamily = "claude_code";
   draft.model = "hosted-model";
   draft.reasoningEffort = "impossible";
-  await rejects(api.create(draft, signal), /reasoning/);
+  await rejects(api.create(draft, FIRST, signal), /reasoning/);
   draft.model = "retired-model";
-  await rejects(api.create(draft, signal), /no longer available/);
+  await rejects(api.create(draft, FIRST, signal), /no longer available/);
   expect(f.state.createCount).toBe(0);
   draft.model = "hosted-model";
   draft.reasoningEffort = "high";
-  await api.create(draft, signal);
+  await api.create(draft, FIRST, signal);
   expect(f.state.createCount).toBe(1);
 });
 
@@ -146,11 +153,11 @@ test("a workspace with no subscription starts sessions on Leverage's own models"
   }
   // A catalog with no model on credits leaves nothing to run.
   f.state.catalog = [{ ...model, sources: ["pool"] }];
-  await rejects(api.create(api.draft(), signal), /unavailable/);
+  await rejects(api.create(api.draft(), FIRST, signal), /unavailable/);
   expect(f.state.createCount).toBe(0);
   f.state.catalog = [{ ...model, sources: ["pool", "leverage"] }];
   const draft = api.draft();
-  expect(await api.create(draft, signal)).toBe(SESSION);
+  expect(await api.create(draft, FIRST, signal)).toBe(SESSION);
   expect(draft.providerFamily).toBe(model.family);
 });
 
@@ -168,7 +175,7 @@ test("a message resolves once Leverage stores it, and an unconfirmed one fails",
   expect(stored.content).toBe("Run the tests");
   const frame = f.frames.find((one) => one.type === "session.message")!;
   expect(frame.delivery).toBe("send");
-  expect(frame.harness).toBe("pi");
+  expect(frame.client).toBe("pi");
   f.state.dropMessageAck = true;
   const life = new AbortController();
   const lost = api.send(
