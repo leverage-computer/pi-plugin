@@ -46,7 +46,7 @@ const bob = input("From Bob", {
   uuid: "22222222-2222-4222-8222-222222222222",
   authorId: MEMBER,
   authorName: "Bob",
-  harness: "codex",
+  client: "codex",
   status: "queued",
 });
 
@@ -227,7 +227,7 @@ test("a stale read cannot overwrite a newer message update", async () => {
   release();
   await refreshing;
   expect(shared.input(bob.uuid)?.content).toBe("From Bob");
-  expect(shared.input(bob.uuid)?.harness).toBe("codex");
+  expect(shared.input(bob.uuid)?.client).toBe("codex");
   shared.close();
   f.publish({
     type: "session.messages.updated",

@@ -49,7 +49,7 @@ export function input(
     sessionId: SESSION,
     authorId: "owner",
     authorName: "Alice",
-    harness: null,
+    client: null,
     content,
     status: "received",
     createdAt: new Date().toISOString(),
@@ -576,13 +576,36 @@ export function workspaceFixture(extra?: Extra) {
             watched(ws, sessionId, true, state);
             return;
           }
+          // Like Leverage, a session starts with its first message.
           case "session.create": {
+            const attachmentIds = Array.isArray(frame.attachmentIds)
+              ? frame.attachmentIds
+              : [];
+            if (!String(frame.content ?? "").trim() && !attachmentIds.length) {
+              reply({
+                type: "error",
+                message: "Invalid event",
+                clientRequestId: frame.clientRequestId,
+              });
+              return;
+            }
             if (!created.has(String(frame.clientRequestId))) {
               created.add(String(frame.clientRequestId));
               state.createCount++;
               if (typeof frame.title === "string") {
                 session.title = frame.title;
               }
+              state.nativeMessages = [
+                ...state.nativeMessages,
+                input(String(frame.content ?? ""), {
+                  uuid: String(frame.clientRequestId),
+                  authorId: ws.data.user,
+                  authorName: ws.data.user === "owner" ? "Alice" : "Bob",
+                  client:
+                    typeof frame.client === "string" ? frame.client : null,
+                }),
+              ];
+              state.version++;
             }
             if (state.dropCreated) {
               state.dropCreated = false;
@@ -604,7 +627,7 @@ export function workspaceFixture(extra?: Extra) {
               sessionId: String(frame.sessionId),
               authorId: ws.data.user,
               authorName: ws.data.user === "owner" ? "Alice" : "Bob",
-              harness: String(frame.harness),
+              client: String(frame.client),
               status: frame.delivery === "queue" ? "queued" : "received",
             });
             state.nativeMessages = [

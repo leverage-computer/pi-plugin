@@ -82,7 +82,7 @@ export const inputSchema = z.object({
   sessionId: z.string(),
   authorId: z.string().nullable(),
   authorName: z.string().nullable(),
-  harness: z.string().nullable(),
+  client: z.string().nullable(),
   content: z.string(),
   status: z.string(),
   createdAt: z.string(),
@@ -478,14 +478,16 @@ export type WorkspaceEvent = z.infer<typeof eventSchema>;
 export const sessionCreateSchema = z.object({
   type: z.literal("session.create"),
   clientRequestId: z.string().uuid(),
-  prompt: z.string(),
+  // The first message. Leverage needs its text or an attachment.
+  content: z.string(),
+  attachmentIds: z.array(z.string()).optional(),
   title: z.string().optional(),
   context: sessionContextSchema,
   providerFamily: familySchema.optional(),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
   checkoutStrategy: z.literal("clone"),
-  harness: z.literal("pi"),
+  client: z.literal("pi"),
 });
 
 export const sessionMessageSchema = z.object({
@@ -497,7 +499,7 @@ export const sessionMessageSchema = z.object({
   attachmentIds: z.array(z.string()).optional(),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
-  harness: z.literal("pi"),
+  client: z.literal("pi"),
 });
 
 export const clientFrameSchema = z.discriminatedUnion("type", [

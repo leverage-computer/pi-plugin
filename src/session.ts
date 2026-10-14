@@ -40,6 +40,25 @@ export type Prompt = {
   delivery: "send" | "queue";
 };
 
+/** Uploads a prompt's files and returns their attachment IDs. */
+export function uploadFiles(
+  prompt: Prompt,
+  signal: AbortSignal,
+): Promise<string[]> {
+  return Promise.all(
+    (prompt.files ?? []).map((file) =>
+      workspace.upload(
+        {
+          filename: file.filename,
+          contentType: file.contentType,
+          bytes: Buffer.from(file.data, "base64"),
+        },
+        signal,
+      ),
+    ),
+  );
+}
+
 export interface ViewHooks {
   // The status lines and footer need a redraw.
   changed(): void;
@@ -479,18 +498,7 @@ export class SessionView {
     }
     this.sending = true;
     try {
-      const attachmentIds = await Promise.all(
-        (prompt.files ?? []).map((file) =>
-          workspace.upload(
-            {
-              filename: file.filename,
-              contentType: file.contentType,
-              bytes: Buffer.from(file.data, "base64"),
-            },
-            this.signal,
-          ),
-        ),
-      );
+      const attachmentIds = await uploadFiles(prompt, this.signal);
       const next = this.nextModel;
       const input = await workspace.send(
         this.session.id,

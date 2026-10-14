@@ -120,7 +120,7 @@ export interface EntryData {
   // A person's message: how far it got, and the app it was sent from.
   inputUuid?: string;
   status?: string;
-  harness?: string | null;
+  client?: string | null;
   attachments?: Attachment[];
   // A sub-agent's work, one line per step.
   steps?: string[];
@@ -462,7 +462,7 @@ export class EntryFold {
             : {}),
         ...(input?.authorName ? { authorName: input.authorName } : {}),
         ...(input?.status ? { status: input.status } : {}),
-        ...(input?.harness !== undefined ? { harness: input.harness } : {}),
+        ...(input?.client !== undefined ? { client: input.client } : {}),
         ...(attachments.length ? { attachments } : {}),
       },
       [user],

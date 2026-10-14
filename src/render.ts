@@ -444,7 +444,7 @@ function person(theme: Theme, shown: Shown): Component {
   const author = clean(authorOf(data, members, viewerId) ?? "User");
   const own = author.endsWith(" (you)");
   const [state, tone] = DELIVERY[data.status ?? ""] ?? [];
-  const app = SENT_FROM.get(data.harness ?? "");
+  const app = SENT_FROM.get(data.client ?? "");
   card.addChild(
     new Text(
       [

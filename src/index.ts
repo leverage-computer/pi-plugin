@@ -42,6 +42,7 @@ import {
   SessionView,
   sameSession,
   sessionLink,
+  uploadFiles,
   viewRemoteHistory,
 } from "./session";
 import {
@@ -518,7 +519,7 @@ export default function leverage(pi: ExtensionAPI): void {
       await createAndSend(prompt, ctx);
     }
   };
-  // The first prompt creates the empty session, opens it, then sends the prompt.
+  // The first prompt creates the session as its first message, then opens it.
   const createAndSend = async (prompt: Prompt, ctx: ExtensionContext) => {
     if (creating) {
       throw new Error("Session setup is already in progress.");
@@ -547,7 +548,18 @@ export default function leverage(pi: ExtensionAPI): void {
     pendingCreation = prompt;
     status(ctx);
     try {
-      const id = await workspace.create(draft, lifetime.signal);
+      // A created draft needs no upload: its session already has the message.
+      const attachmentIds = draft.sessionId
+        ? []
+        : await uploadFiles(prompt, lifetime.signal);
+      const id = await workspace.create(
+        draft,
+        {
+          content: prompt.text,
+          ...(attachmentIds.length ? { attachmentIds } : {}),
+        },
+        lifetime.signal,
+      );
       rememberModel(api.connection, {
         providerFamily: draft.providerFamily,
         model: draft.model,
@@ -560,7 +572,6 @@ export default function leverage(pi: ExtensionAPI): void {
       if (!view?.ready || view.session.id !== session.id) {
         await attach(session, ctx);
       }
-      await requireSession(true).send(prompt);
       if (opening === generation) {
         draft = undefined;
         pendingCreation = undefined;

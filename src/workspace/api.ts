@@ -473,11 +473,15 @@ export class WorkspaceClient {
   }
 
   /**
-   * Creates the empty session for a draft. The draft keeps the created ID, so
-   * a retry after a lost acknowledgement uses the same session instead of
-   * creating a second one.
+   * Creates a draft's session with its first message. The draft keeps the
+   * created ID, so a retry after a lost acknowledgement uses the same session
+   * instead of creating a second one.
    */
-  create(draft: SessionDraft, signal: AbortSignal): Promise<string> {
+  create(
+    draft: SessionDraft,
+    first: Pick<OutgoingMessage, "content" | "attachmentIds">,
+    signal: AbortSignal,
+  ): Promise<string> {
     const program = Effect.gen({ self: this }, function* () {
       if (draft.sessionId) {
         return draft.sessionId;
@@ -493,14 +497,14 @@ export class WorkspaceClient {
       const request = sessionCreateSchema.parse({
         type: "session.create",
         clientRequestId: draft.requestId,
-        prompt: "",
+        ...first,
         ...(title?.success ? { title: title.data } : {}),
         context: draft.context,
         providerFamily: draft.providerFamily,
         model: draft.model,
         reasoningEffort: draft.reasoningEffort,
         checkoutStrategy: "clone",
-        harness: "pi",
+        client: "pi",
       });
       // The socket owns the "not confirmed" outcome, so the signal goes to it.
       const reply = yield* Effect.tryPromise({
@@ -537,7 +541,7 @@ export class WorkspaceClient {
       type: "session.message",
       sessionId,
       ...message,
-      harness: "pi",
+      client: "pi",
     });
     const reply = await socket.request(
       frame,
