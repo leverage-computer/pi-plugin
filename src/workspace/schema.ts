@@ -245,15 +245,6 @@ export const historyPageSchema = z.object({
 
 export type HistoryPage = z.infer<typeof historyPageSchema>;
 
-export const queueSchema = z.object({
-  queuedCount: z.number(),
-  messages: z.array(inputSchema),
-});
-
-export const pendingApprovalsSchema = z.object({
-  invocations: z.array(invocationSchema),
-});
-
 export const modelSchema = z.object({
   id: z.string(),
   label: z.string(),

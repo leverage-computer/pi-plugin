@@ -25,10 +25,8 @@ import {
   memberSchema,
   modelCatalogSchema,
   type ProviderFamily,
-  pendingApprovalsSchema,
   preferencesSchema,
   providerAvailabilitySchema,
-  queueSchema,
   runnableFamilies,
   type SessionDraft,
   type SessionInput,
@@ -367,31 +365,6 @@ export class WorkspaceClient {
       historyPageSchema,
       signal,
     );
-  }
-
-  /** Messages waiting for their turn, in queue order. */
-  async queue(
-    sessionId: string,
-    signal?: AbortSignal,
-  ): Promise<SessionInput[]> {
-    const queue = await this.read(
-      `/api/sessions/${encodeURIComponent(sessionId)}/queue`,
-      queueSchema,
-      signal,
-    );
-    return queue.messages;
-  }
-
-  async pendingApprovals(
-    sessionId: string,
-    signal?: AbortSignal,
-  ): Promise<Invocation[]> {
-    const pending = await this.read(
-      `/api/sessions/${encodeURIComponent(sessionId)}/pending-approvals`,
-      pendingApprovalsSchema,
-      signal,
-    );
-    return pending.invocations;
   }
 
   async decide(
