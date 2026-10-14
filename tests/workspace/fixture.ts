@@ -163,7 +163,6 @@ export function workspaceFixture(extra?: Extra) {
       "logs/run.txt": "run 1 ok",
     } as Record<string, string>,
     nativeMessages: [] as SessionInput[],
-    queue: [] as SessionInput[],
     catalog: [hostedModel] as HostedModel[],
     preferences: {} as Record<string, unknown>,
   };
@@ -331,14 +330,6 @@ export function workspaceFixture(extra?: Extra) {
           oldestTranscriptSeq: page[0]?.transcriptSeq ?? null,
         });
       }
-      if (path.endsWith("/queue")) {
-        return Response.json({
-          sessionId: id,
-          queuedCount: state.queue.length,
-          queueHold: null,
-          messages: state.queue,
-        });
-      }
       if (path.endsWith("/files/resources")) {
         return Response.json({
           basis: "active_runtime",
@@ -472,13 +463,6 @@ export function workspaceFixture(extra?: Extra) {
               description: "Issues and projects",
             },
           ],
-        });
-      }
-      if (path.endsWith("/pending-approvals")) {
-        return Response.json({
-          invocations: approvals.filter(
-            (one) => one.state === "pending_approval",
-          ),
         });
       }
       if (path.endsWith("/read")) {
@@ -633,10 +617,7 @@ export function workspaceFixture(extra?: Extra) {
           // Taking a message back withdraws it, which empties the inbox.
           case "session.queue.cancel": {
             const uuid = String(frame.uuid);
-            const taken = [...state.queue, ...state.nativeMessages].find(
-              (one) => one.uuid === uuid,
-            );
-            state.queue = state.queue.filter((one) => one.uuid !== uuid);
+            const taken = state.nativeMessages.find((one) => one.uuid === uuid);
             state.nativeMessages = state.nativeMessages.filter(
               (one) => one.uuid !== uuid,
             );

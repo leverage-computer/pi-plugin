@@ -220,14 +220,11 @@ test("archive and restore wait for Leverage to apply them, and report a refusal"
   await rejects(readOnly.archive(SESSION, signal), /Only writers/);
 });
 
-test("reads approvals, the queue and the model catalog, and sends a decision", async () => {
+test("reads the model catalog and sends a decision", async () => {
   const f = fixture();
   const api = f.client();
   const pending = invocation();
   f.approvals.push(pending);
-  expect((await api.pendingApprovals(SESSION)).map((one) => one.id)).toEqual([
-    pending.id,
-  ]);
   const decided = await api.decide(pending.id, {
     action: "approve",
     approvalScope: "session",
@@ -237,7 +234,6 @@ test("reads approvals, the queue and the model catalog, and sends a decision", a
     action: "approve",
     approvalScope: "session",
   });
-  expect(await api.queue(SESSION)).toEqual([]);
   expect((await api.models()).map((one) => one.id)).toEqual(["hosted-model"]);
 });
 
