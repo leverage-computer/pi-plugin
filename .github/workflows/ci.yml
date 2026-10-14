@@ -25,4 +25,4 @@ jobs:
           bun-version: "1.4.2"
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: npm pack --dry-run
+      - run: bun pm pack --dry-run
