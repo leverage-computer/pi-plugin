@@ -73,6 +73,9 @@ export interface ViewHooks {
   opened(): void;
   // The server removed access, so the connection must start again.
   revoked(): void;
+  // Leverage refused a message Pi had stopped waiting for, so its text is
+  // given back.
+  refused(text: string, error: unknown): void;
 }
 
 export const LINK_ENTRY = "leverage-session";
@@ -622,7 +625,7 @@ export class SessionView {
         } catch (error) {
           if (!(error instanceof UnconfirmedError) && !this.closed) {
             this.unconfirmed = undefined;
-            report(this.ctx, error);
+            this.hooks.refused(prompt.text, error);
           }
         } finally {
           if (!this.closed) {

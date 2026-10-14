@@ -44,6 +44,8 @@ import {
 
 // The most a download reads into memory before it is saved.
 const MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+// How long an upload may take. The message it belongs to waits on it.
+const UPLOAD_MS = 30_000;
 
 const workspaceList = z.array(z.object({ id: z.string(), slug: z.string() }));
 
@@ -423,11 +425,16 @@ export class WorkspaceClient {
     if (init.mode !== "single" || !init.url) {
       throw new InputError("This attachment is too large to send from Pi.");
     }
+    const timeout = AbortSignal.timeout(UPLOAD_MS);
     const stored = await fetch(init.url, {
       method: "PUT",
-      signal,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       headers: { "content-type": file.contentType },
       body: Buffer.from(file.bytes),
+    }).catch((error: unknown) => {
+      throw timeout.aborted
+        ? new StateError("The attachment upload timed out.")
+        : error;
     });
     if (!stored.ok) {
       throw new StateError(`The attachment upload failed (${stored.status}).`);

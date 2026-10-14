@@ -517,6 +517,15 @@ export default function leverage(pi: ExtensionAPI): void {
       editor.setText(text);
     }
   };
+  // A message Leverage refused after Pi stopped waiting for it goes back into
+  // the composer, above whatever is typed there since.
+  const giveBack = (ctx: ExtensionContext, text: string, error: unknown) => {
+    report(ctx, error);
+    const typed = ctx.ui.getEditorText();
+    ctx.ui.setEditorText(
+      [text, typed].filter((one) => one.trim()).join("\n\n"),
+    );
+  };
   // Pi's history of the session: Leverage's older messages, page by page.
   const history = async (ctx: ExtensionContext) => {
     const current = requireSession();
@@ -631,6 +640,7 @@ export default function leverage(pi: ExtensionAPI): void {
       idle: () => !busy() && !creating,
       opened: () => redrawConversation(),
       revoked: () => owner.abort(),
+      refused: (text, error) => giveBack(ctx, text, error),
     });
     void offerModels(session.providerFamily)
       .then(() => follow(ctx))
@@ -790,7 +800,7 @@ export default function leverage(pi: ExtensionAPI): void {
         }
         await createAndSend(prompt, ctx).catch((error: unknown) => {
           if (!(error instanceof UnconfirmedError) && opening === generation) {
-            report(ctx, error);
+            giveBack(ctx, prompt.text, error);
           }
         });
       }
